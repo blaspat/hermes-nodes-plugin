@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-nodes-plugin"
+version = "0.1.0"
+description = "Hermes Agent plugin: WSS node server for remote execution targets"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Blasius Patrick", email = "blasius.patrick@gmail.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# Runtime deps are intentionally empty in this skeleton; later tasks add
+# `cryptography`, `websockets` (or `fastapi`+`uvicorn`), and `pyyaml`.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+# Target the module (not `module:register`). `ep.load()` for a `module:function`
+# target returns the function object, but Hermes's plugin loader does
+# `module = ep.load(); getattr(module, "register", None)` — it expects `module`
+# to be a real module. Pointing at the module form lets Hermes import the
+# package and then pick `register` off it. See hermes_cli/plugins.py:_load_plugin.
+hermes_nodes_plugin = "hermes_nodes_plugin"
+
+[tool.setuptools.packages.find]
+include = ["hermes_nodes_plugin*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
