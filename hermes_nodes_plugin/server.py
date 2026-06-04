@@ -67,6 +67,8 @@ from hermes_nodes_plugin.errors import TokenStoreError
 from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
 from hermes_nodes_plugin.tokens import TokenStore, token_store_from_config
 
+logger = logging.getLogger(__name__)
+
 # Close codes from PROTOCOL.md §4. Named for clarity at call sites.
 CLOSE_AUTH_FAILED = 4001
 CLOSE_PROTOCOL_VERSION = 4002
@@ -335,16 +337,24 @@ def create_app(
         await _send_json_safe(websocket, _build_auth_ok(session_id))
 
         # -- 4. hold the connection open until the client disconnects ----
-        # Task 2.4 doesn't dispatch any messages yet — the registry
-        # is the artefact. We still need to keep the coroutine alive
-        # (otherwise the WebSocket closes immediately), and we need
-        # to unregister on disconnect.
+        # Task 2.4 didn't dispatch any messages yet — the registry
+        # was the artefact. Task 2.7 adds the request/response
+        # dispatch: we read every inbound JSON message, touch the
+        # heartbeat (PROTOCOL §6), and route response messages
+        # (``exec_result`` / ``read_result`` / ``write_result`` /
+        # ``error``) back to the in-flight :class:`asyncio.Future`
+        # that :class:`NodeEnvironment` registered in
+        # :meth:`NodeRegistry.register_waiter`. Unknown message types
+        # are ignored (forward-compat: future PROTOCOL versions can
+        # add types without breaking the server).
         try:
             while True:
-                # We don't expect any application messages yet, but
-                # we still read so the close frame is consumed and
-                # ``WebSocketDisconnect`` is raised cleanly.
-                await websocket.receive_text()
+                raw = await websocket.receive_json()
+                # Heartbeat bookkeeping: any inbound message counts.
+                # We await this so the registry's lock isn't held
+                # longer than necessary, but it's cheap.
+                await registry.touch_heartbeat(auth.node_name)
+                await _route_inbound(registry, auth.node_name, raw)
         except WebSocketDisconnect:
             pass
         finally:
@@ -400,6 +410,95 @@ def _major_compatible(declared: str) -> bool:
         return int(major_str) == PROTOCOL_MAJOR
     except (ValueError, IndexError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Inbound dispatch (Task 2.7)
+# ---------------------------------------------------------------------------
+
+
+# Response-shaped message types that the server routes back to a
+# in-flight :class:`NodeEnvironment` call. We don't validate the
+# payload here — the environment layer does that, since each
+# request type has its own result shape. Anything outside this set
+# is ignored (PROTOCOL §3 lists ``ping``/``pong``/``event`` as
+# node-originated only; an unknown type is treated as a no-op so
+# future PROTOCOL versions can add messages without breaking us).
+_ROUTABLE_RESULT_TYPES = frozenset(
+    {"exec_result", "read_result", "write_result", "error"}
+)
+
+
+async def _route_inbound(registry: NodeRegistry, node_name: str, raw: Any) -> None:
+    """Dispatch one inbound JSON message to a registered waiter.
+
+    Args:
+        registry: The :class:`NodeRegistry` holding both the
+            connection table and the pending-waiter map.
+        node_name: The authenticated node name the message came
+            from. The server's connection handler passes the
+            ``auth``-time name so we never trust a client-supplied
+            ``node_name`` here.
+        raw: The decoded JSON payload from
+            :meth:`WebSocket.receive_json`. ``None`` or non-dict
+            values are logged and dropped — they indicate a
+            protocol violation or transport corruption, and the
+            keep-alive loop will hit the next ``receive_json`` to
+            surface a structured error (PROTOCOL §1).
+
+    Behaviour:
+        * ``exec_result`` / ``read_result`` / ``write_result`` /
+          ``error`` with a string ``id`` field → the matching waiter
+          is resolved with the message body. A ``False`` return
+          from :meth:`NodeRegistry.complete_waiter` (no such
+          waiter) is logged at DEBUG — the call has either timed
+          out or its connection was replaced, and the result is
+          discarded.
+        * Unknown message types (e.g. ``pong``, future PROTOCOL
+          additions) are ignored. They're still counted as heartbeat
+          activity by the caller.
+        * Malformed payloads (``type`` not a string, ``id``
+          missing) are logged at WARNING. The connection stays
+          open; one bad message shouldn't kill the session.
+    """
+    if not isinstance(raw, dict):
+        logger.warning("dropping non-dict inbound message from %r: %r", node_name, raw)
+        return
+
+    msg_type = raw.get("type")
+    if not isinstance(msg_type, str):
+        logger.warning(
+            "dropping inbound message with non-string type from %r: %r",
+            node_name,
+            raw,
+        )
+        return
+
+    if msg_type not in _ROUTABLE_RESULT_TYPES:
+        # Not a result we route. Could be ``pong``, an ``event``
+        # notification (forward-compat), or a future PROTOCOL
+        # addition. The connection loop already counted it as
+        # heartbeat activity; nothing else to do.
+        return
+
+    request_id = raw.get("id")
+    if not isinstance(request_id, str) or not request_id:
+        logger.warning(
+            "dropping %s message without string id from %r: %r",
+            msg_type,
+            node_name,
+            raw,
+        )
+        return
+
+    resolved = await registry.complete_waiter(node_name, request_id, raw)
+    if not resolved:
+        logger.debug(
+            "no waiter for %s on %r (id=%s); call may have timed out",
+            msg_type,
+            node_name,
+            request_id,
+        )
 
 
 # ---------------------------------------------------------------------------

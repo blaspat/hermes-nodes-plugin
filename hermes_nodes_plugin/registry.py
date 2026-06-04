@@ -33,11 +33,33 @@ in-memory shape stays frozen-equivalent.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
+
+
+# Sentinel exception type for waiters that get cancelled because their
+# connection went away (node disconnect, replacement, server drain). The
+# server's dispatch loop and the NodeEnvironment both treat this as a
+# non-error "the call cannot complete" signal — callers (Kate) can decide
+# whether to surface a user-visible retry.
+class _WaiterCancelled(BaseException):
+    """Internal: a pending future was cancelled because its connection died.
+
+    Inherits from ``BaseException`` so it bypasses ``except Exception``
+    handlers in user code that might want to swallow general errors.
+    Waiters should always re-raise this; the environment layer turns it
+    into a clean :class:`NodeNotConnectedError` at the API boundary.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _now_utc() -> datetime:
@@ -120,6 +142,27 @@ class NodeRegistry:
       but it's the natural sibling of ``touch_heartbeat`` and lives
       here so the time math is in one place.
 
+    Waiter registry (Task 2.7)
+    --------------------------
+
+    ``NodeEnvironment`` is a request/response interface: the brain sends
+    ``exec`` and awaits ``exec_result``. The future that represents the
+    pending call must be registered somewhere keyed by ``(node_name,
+    request_id)`` so the server's inbound dispatch loop can complete it
+    when the matching response arrives. We hold that map here (rather
+    than on :class:`NodeConnection`) because:
+
+      * The map is server-wide state — multiple in-flight calls to the
+        same node share one WebSocket and one waiter namespace.
+      * When a connection is replaced or lost, we need to fail *all*
+        of that node's pending waiters with a single call. Keeping the
+        map on the registry makes that a one-liner
+        (:meth:`fail_node_waiters`) instead of fishing waiters out of
+        a frozen dataclass.
+
+    See :meth:`register_waiter`, :meth:`complete_waiter`, and
+    :meth:`fail_node_waiters` for the public surface.
+
     A fresh registry is created per server process. There is no
     persistence — losing the process loses the live-connection table,
     which is the correct behaviour (clients must reconnect).
@@ -128,6 +171,12 @@ class NodeRegistry:
     def __init__(self) -> None:
         self._connections: dict[str, NodeConnection] = {}
         self._lock = asyncio.Lock()
+        # Pending request/response futures, keyed by (node_name, request_id).
+        # The future's value is the decoded inbound message body (typically
+        # the ``exec_result`` payload). Lives in the registry (not the
+        # dataclass) because the dataclass is frozen and waiter count
+        # changes constantly.
+        self._waiters: dict[tuple[str, str], asyncio.Future[Any]] = {}
 
     async def register(self, conn: NodeConnection) -> NodeConnection | None:
         """Install ``conn`` under ``conn.name``.
@@ -138,20 +187,39 @@ class NodeRegistry:
 
         Idempotency: registering the same :class:`NodeConnection` twice
         (e.g. by mistake in a test) is treated as a normal replace.
+
+        Replacing an existing connection also fails every pending
+        waiter for that node name (Task 2.7). The previous session's
+        in-flight calls can never resolve through the new socket, so
+        we wake them with :class:`_WaiterCancelled` rather than letting
+        them hang until the per-call timeout fires.
         """
         async with self._lock:
             previous = self._connections.get(conn.name)
             self._connections[conn.name] = conn
-            return previous
+        if previous is not None and previous is not conn:
+            # Fail the old session's waiters outside the lock so the
+            # cancellation callbacks (which may themselves await on
+            # the registry) don't deadlock.
+            await self.fail_node_waiters(conn.name, "connection_replaced")
+        return previous
 
     async def unregister(self, name: str) -> NodeConnection | None:
         """Remove the entry for ``name``. Returns what was removed, or ``None``.
 
         Safe to call from a connection's ``finally`` block — calling
         with a name that was never registered is a no-op.
+
+        Also fails every pending waiter for ``name`` with
+        :class:`_WaiterCancelled` (``reason="node_disconnected"``).
+        A closed WebSocket can never answer its in-flight calls, so we
+        wake them rather than letting them time out.
         """
         async with self._lock:
-            return self._connections.pop(name, None)
+            removed = self._connections.pop(name, None)
+        if removed is not None:
+            await self.fail_node_waiters(name, "node_disconnected")
+        return removed
 
     async def get(self, name: str) -> NodeConnection | None:
         """Return the live connection for ``name``, or ``None``."""
@@ -232,6 +300,111 @@ class NodeRegistry:
         cutoff = _now_utc() - older_than
         async with self._lock:
             return [c for c in self._connections.values() if c.last_heartbeat < cutoff]
+
+    # -- waiter registry (Task 2.7) ---------------------------------------
+
+    async def register_waiter(self, name: str, request_id: str) -> asyncio.Future[Any]:
+        """Register a future for an in-flight request to ``name``.
+
+        The future is set (with a result payload) by
+        :meth:`complete_waiter` when the matching ``exec_result`` /
+        ``read_result`` / etc. arrives, or by :meth:`fail_node_waiters`
+        when the connection dies. :class:`NodeEnvironment` awaits the
+        future with its own timeout.
+
+        Args:
+            name: The node the request was sent to. Must currently
+                have a registered connection — callers should
+                :meth:`is_connected` first, or accept that the future
+                will resolve quickly with :class:`_WaiterCancelled`.
+            request_id: The protocol-level correlation id (UUIDv4 per
+                PROTOCOL §2). Unique within ``name`` for the duration
+                of the call; the server enforces this by keying on
+                ``(name, request_id)``.
+
+        Returns:
+            A pending :class:`asyncio.Future`. The caller is
+            responsible for removing the waiter on timeout/cancel via
+            :meth:`unregister_waiter` to avoid leaking the dict entry
+            on the failure path.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+        async with self._lock:
+            self._waiters[(name, request_id)] = future
+        return future
+
+    async def complete_waiter(self, name: str, request_id: str, payload: Any) -> bool:
+        """Resolve the waiter for ``(name, request_id)`` with ``payload``.
+
+        Called from the server's inbound dispatch loop when an
+        ``exec_result`` (or equivalent) arrives. Returns ``True`` if a
+        waiter was found and resolved, ``False`` otherwise. A
+        ``False`` return is benign — it means the call already
+        timed out (or its connection died) and the waiter was
+        removed; the inbound response is discarded.
+
+        This method is *synchronous-ish* (no ``await`` on the body
+        beyond the lock acquisition) so the dispatch loop can keep
+        reading the next message without yielding to other tasks.
+        """
+        async with self._lock:
+            future = self._waiters.pop((name, request_id), None)
+        if future is None or future.done():
+            return False
+        future.set_result(payload)
+        return True
+
+    async def unregister_waiter(self, name: str, request_id: str) -> None:
+        """Remove a waiter without resolving it.
+
+        Used on the caller's timeout/cancel path so the dict entry
+        doesn't outlive the future. Safe to call when no waiter is
+        registered (idempotent).
+        """
+        async with self._lock:
+            self._waiters.pop((name, request_id), None)
+
+    async def fail_node_waiters(self, name: str, reason: str) -> int:
+        """Wake every pending waiter for ``name`` with :class:`_WaiterCancelled`.
+
+        Called from :meth:`unregister` (node disconnect) and from
+        :meth:`register` (connection replaced). The dispatch is
+        asynchronous and runs the snapshot/resolve split so we never
+        hold the lock while invoking ``future.set_exception`` — a
+        future's exception callback might itself try to take the
+        lock, and re-entry would deadlock.
+
+        Returns:
+            The number of waiters that were woken. Useful for tests
+            and for a log line on the rare "many waiters at once"
+            event.
+        """
+        # Phase 1: under the lock, snapshot and pop every matching waiter.
+        async with self._lock:
+            keys = [k for k in self._waiters if k[0] == name]
+            futures: list[asyncio.Future[Any]] = []
+            for k in keys:
+                f = self._waiters.pop(k, None)
+                if f is not None:
+                    futures.append(f)
+        # Phase 2: outside the lock, resolve the futures. We do this in
+        # a second pass so a waiter callback that touches the registry
+        # (e.g. an environment's cancel handler) doesn't deadlock.
+        woken = 0
+        for future in futures:
+            if future.done():
+                continue
+            future.set_exception(_WaiterCancelled(reason))
+            woken += 1
+        if woken:
+            logger.debug(
+                "failed %d pending waiter(s) for node %r (reason=%s)",
+                woken,
+                name,
+                reason,
+            )
+        return woken
 
     def __len__(self) -> int:
         # Synchronous convenience for tests / debug printing. Not part

@@ -28,9 +28,43 @@ class AuthError(PluginError):
     """Authentication failure on the WSS server (bad token, wrong node name)."""
 
 
+class NodeNotConnectedError(PluginError):
+    """A call was made to a node that's not currently in the registry.
+
+    Surfaces to the caller of :meth:`NodeEnvironment.execute` (and
+    its sibling ``read``/``write`` methods) when the target node
+    name is unknown or its WebSocket has dropped. Distinct from
+    :class:`NodeExecutionError` (the node is fine, but the *call*
+    failed) and from :class:`asyncio.TimeoutError` (the node is
+    fine, but the call didn't return in time).
+    """
+
+
+class NodeExecutionError(PluginError):
+    """A node returned a structured ``exec_result`` with status=error.
+
+    Carries the protocol-level reason and code so callers (Kate)
+    can decide whether to retry, surface a user-visible message, or
+    fall back to a different node. The node connection itself
+    stays open; the failure is per-call.
+
+    Attributes:
+        code: The protocol error code (e.g. 3001 for
+            ``exec_timeout``). May be 0 for shape violations the
+            server couldn't categorise — the ``str(exc)`` message
+            is the authoritative description in that case.
+    """
+
+    def __init__(self, message: str, *, code: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 __all__ = [
     "PluginError",
     "ConfigError",
     "TokenStoreError",
     "AuthError",
+    "NodeNotConnectedError",
+    "NodeExecutionError",
 ]
