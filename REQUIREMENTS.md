@@ -177,9 +177,14 @@ All of the following must be true:
 
 ---
 
-## 5. Open questions for Patrick
+## 5. Resolved decisions
 
-(To be resolved before implementation begins.)
+All open questions from earlier drafts are decided. Recording them here so future contributors don't re-litigate.
 
-2. **Token rotation cadence:** v1 doesn't auto-rotate. Manual via `hermes node revoke` + `pair`. Acceptable?
-3. **Audit retention:** 1 year server-side default — fine?
+| # | Question | Decision | Date |
+|---|---|---|---|
+| 1 | Default WSS port | **6969** | 2026-06-04 |
+| 2 | Token rotation cadence | **Manual only.** `hermes node revoke` + `hermes node pair` is the rotation path. v1 ships with no auto-rotation. | 2026-06-04 |
+| 3 | Audit log retention | **90 days laptop-side, 1 year server-side.** Both configurable via `audit_retention_days` (server) and `audit_retention_days` in node config (laptop). | 2026-06-04 |
+| 4 | TLS cert source | **Configurable.** Default mode is reverse-proxied (nginx fronts TLS, plugin binds to `127.0.0.1:6969` plain HTTP). Direct TLS mode available when no reverse proxy is in front. See `README.md` "TLS configuration" for the nginx snippet. | 2026-06-04 |
+| 5 | QR code in `hermes node pair` | **Text token only for v1.** QR code is a v2 nice-to-have. | 2026-06-04 |
