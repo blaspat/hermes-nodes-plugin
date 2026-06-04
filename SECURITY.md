@@ -25,7 +25,7 @@
 ## Transport
 
 - **Required:** TLS 1.3 (or 1.2 minimum). The server refuses to start without a valid cert + key pair.
-- **Default port:** 8443 (HTTPS-adjacent; usually allowed through corporate firewalls).
+- **Default port:** 6969. Operator's choice — change it via `HERMES_NODES_PORT` if the corporate firewall blocks this port. 443 is the most universally-allowed alternative.
 - **Direction:** node → server only. The node never accepts inbound connections. The laptop needs no firewall changes.
 - **MITM protection:** standard CA validation. Self-signed certs require explicit `ca_cert` config on the node (not in default install path).
 

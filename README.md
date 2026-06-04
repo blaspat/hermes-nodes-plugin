@@ -50,7 +50,7 @@ The plugin reads from `~/.hermes/hermes-nodes.yaml` (created automatically on fi
 ```yaml
 # ~/.hermes/hermes-nodes.yaml
 host: 0.0.0.0
-port: 8443
+port: 6969
 tls_cert_path: ~/.hermes/nodes/server.crt
 tls_key_path: ~/.hermes/nodes/server.key
 token_store_path: ~/.hermes/nodes/tokens.json
@@ -61,7 +61,7 @@ audit_retention_days: 365
 | Env var | Default | Purpose |
 |---|---|---|
 | `HERMES_NODES_HOST` | `0.0.0.0` | WSS bind address |
-| `HERMES_NODES_PORT` | `8443` | WSS bind port |
+| `HERMES_NODES_PORT` | `6969` | WSS bind port |
 | `HERMES_NODES_TLS_CERT` | `~/.hermes/nodes/server.crt` | TLS cert path |
 | `HERMES_NODES_TLS_KEY` | `~/.hermes/nodes/server.key` | TLS key path |
 | `HERMES_NODES_TOKEN_KEY` | *(required)* | Fernet key for encrypting tokens at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
@@ -80,7 +80,7 @@ hermes node pair --name work-laptop
 #
 #   Run on the laptop:
 #     hermes-node pair \
-#       --server wss://vps.yourdomain.com:8443 \
+#       --server wss://vps.yourdomain.com:6969 \
 #       --token aBcD1234eFgH5678...
 
 # List paired nodes + connection state
@@ -130,7 +130,7 @@ From inside a Kate (or any Hermes) session:
 │                                      │    │    │                                      │
 └──────────────────────────────────────┘    │    └──────────────────────────────────────┘
                                             │
-                              WSS over TLS 8443
+                              WSS over TLS 6969
 ```
 
 **The protocol contract between them lives in [`hermes-nodes/PROTOCOL.md`](https://github.com/blaspat/hermes-nodes/blob/main/PROTOCOL.md).** Both sides pin to it for tests.

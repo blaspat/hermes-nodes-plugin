@@ -22,7 +22,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 ### FR-2: Connection lifecycle
 
-**FR-2.1** The server accepts inbound WSS connections on the configured port (default 8443), performs TLS, and waits for a `hello` message.
+**FR-2.1** The server accepts inbound WSS connections on the configured port (default 6969), performs TLS, and waits for a `hello` message.
 
 **FR-2.2** The server validates the node's `hello.protocol_version` against its own; rejects with code `4002` if incompatible.
 
@@ -60,7 +60,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **FR-4.1** Plugin reads configuration from `~/.hermes/hermes-nodes.yaml` and env vars. Env vars override file values. Defaults if neither set:
 - `host`: `0.0.0.0`
-- `port`: `8443`
+- `port`: `6969`
 - `tls_cert_path`: `~/.hermes/nodes/server.crt`
 - `tls_key_path`: `~/.hermes/nodes/server.key`
 - `token_store_path`: `~/.hermes/nodes/tokens.json`
@@ -175,7 +175,6 @@ All of the following must be true:
 
 (To be resolved before implementation begins.)
 
-1. **Default port:** 8443? Or do you have a preference based on your VPS firewall?
 2. **Token rotation cadence:** v1 doesn't auto-rotate. Manual via `hermes node revoke` + `pair`. Acceptable?
 3. **Audit retention:** 1 year server-side default — fine?
 4. **TLS cert source:** do you have a cert from Let's Encrypt for `vps.yourdomain.com` already, or should the install doc cover self-signed for development?
