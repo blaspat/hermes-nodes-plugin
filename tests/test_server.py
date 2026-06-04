@@ -36,6 +36,7 @@ ASGI loop, so we exercise the real coroutine path.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -488,3 +489,67 @@ def test_close_codes_match_protocol() -> None:
     assert CLOSE_AUTH_FAILED == 4001
     assert CLOSE_PROTOCOL_VERSION == 4002
     assert CLOSE_MESSAGE_OUT_OF_ORDER == 4003
+
+
+# ---------------------------------------------------------------------------
+# Disconnect cleanup (Task 2.5 acceptance: "handles disconnect cleanup tested")
+# ---------------------------------------------------------------------------
+
+
+def test_node_disconnect_removes_registry_entry(
+    client: TestClient, store: TokenStore, registry: NodeRegistry
+) -> None:
+    """End-to-end disconnect cleanup: connect → close → registry is empty.
+
+    Complements the replace test above: that one only verified cleanup
+    as a side effect of a *second* connection winning the slot. This
+    test verifies the simpler "node goes away, no replacement" path,
+    which is the one that actually matters for "is the node online?"
+    queries in Task 2.7's ``node_exec``.
+    """
+    token = store.create("laptop-disconnect")
+
+    with ws_connect(client) as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "laptop-disconnect",
+            }
+        )
+        ws.receive_json()  # hello_ack
+        ws.send_json({"type": "auth", "node_name": "laptop-disconnect", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        # Sanity: the entry is there while the socket is alive.
+        assert "laptop-disconnect" in registry
+        assert len(registry) == 1
+        # Exercise the new 2.5 surface while connected (async API).
+        assert _run(_is_connected(registry, "laptop-disconnect")) is True
+        snapshot = _run(_list_connected(registry))
+        assert [c.name for c in snapshot] == ["laptop-disconnect"]
+
+    # Socket is closed. The handler's finally-block ran
+    # ``registry.unregister``; the entry must be gone.
+    assert "laptop-disconnect" not in registry
+    assert len(registry) == 0
+    assert _run(_is_connected(registry, "laptop-disconnect")) is False
+    assert _run(_list_connected(registry)) == []
+
+
+def _run(coro):
+    """Run a coroutine to completion on a fresh event loop.
+
+    Lets the sync test functions above exercise the registry's async
+    surface without converting the whole test to async (which would
+    force the ``TestClient`` fixture to be async too — more churn
+    than the test is worth).
+    """
+    return asyncio.run(coro)
+
+
+async def _is_connected(registry: NodeRegistry, name: str) -> bool:
+    return await registry.is_connected(name)
+
+
+async def _list_connected(registry: NodeRegistry) -> list:
+    return await registry.list_connected()
