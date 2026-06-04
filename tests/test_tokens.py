@@ -298,7 +298,9 @@ def test_decryptable_but_wrong_shape_raises(tmp_path: Path, key: str) -> None:
     'records' key) → clear error."""
     fernet = Fernet(key.encode("ascii"))
     p = tmp_path / "tokens.json"
-    p.write_bytes(fernet.encrypt(json.dumps(["nope", "should", "be", "object"]).encode()))
+    p.write_bytes(
+        fernet.encrypt(json.dumps(["nope", "should", "be", "object"]).encode())
+    )
     store = TokenStore(path=p, key=key)
     with pytest.raises(TokenStoreError, match="unexpected shape"):
         store.list()
@@ -460,7 +462,9 @@ def test_validate_uses_hmac_compare_digest() -> None:
     # validate() body. We use a regex limited to a window around the
     # 'def validate' line to avoid false positives elsewhere in the
     # file.
-    match = re.search(r"def validate\([^)]*\).*?(?=\n    def |\nclass |\Z)", src, re.DOTALL)
+    match = re.search(
+        r"def validate\([^)]*\).*?(?=\n    def |\nclass |\Z)", src, re.DOTALL
+    )
     assert match, "could not locate validate() body"
     validate_body = match.group(0)
     # No equality check on candidate/match (the string hash compare

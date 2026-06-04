@@ -17,7 +17,6 @@ exactly this reason.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from textwrap import dedent
 
@@ -501,25 +500,23 @@ def test_test_does_not_touch_real_environ(
 
 def test_real_load_config_uses_environ_when_no_override(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Document the default: load_config() without env= falls back to os.environ.
 
     This is the behaviour the operator gets in production; the env=
     override exists only for tests.
     """
-    # Snapshot whatever the host has, mutate, restore.
-    saved = {
-        k: os.environ.get(k) for k in list(os.environ) if k.startswith("HERMES_NODES_")
-    }
-    try:
-        os.environ["HERMES_NODES_HOST"] = "from-prod-call"
-        os.environ.pop("HERMES_NODES_PORT", None)
-        cfg = load_config(config_path=tmp_path / "nope.yaml")
-        assert cfg.host == "from-prod-call"
-        assert cfg.port == 6969  # default
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+    # Use monkeypatch instead of bare os.environ mutation: the previous
+    # version snapshotted HERMES_NODES_* keys and restored them in a
+    # ``finally``, but if the test *added* a key not present in the
+    # snapshot (HERMES_NODES_HOST here) the restore loop would never
+    # see it, and the env var leaked into later tests — including
+    # the lifecycle integration tests, which tried to bind the
+    # host and failed DNS resolution. monkeypatch.setenv auto-undo
+    # fixes the leak.
+    monkeypatch.delenv("HERMES_NODES_PORT", raising=False)
+    monkeypatch.setenv("HERMES_NODES_HOST", "from-prod-call")
+    cfg = load_config(config_path=tmp_path / "nope.yaml")
+    assert cfg.host == "from-prod-call"
+    assert cfg.port == 6969  # default
