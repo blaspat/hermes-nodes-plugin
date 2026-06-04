@@ -20,11 +20,13 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-# Runtime deps. Task 2.2 (config schema) introduces `pyyaml`; later tasks
-# add `cryptography` (token store, FR-2) and `websockets`/`fastapi` (WSS
-# server, Task 2.4).
+# Runtime deps. Task 2.2 (config schema) introduces `pyyaml`; Task 2.3
+# (token store) adds `cryptography` for Fernet at-rest encryption
+# (REQUIREMENTS NFR-1.2). The WSS server (Task 2.4) will add
+# `websockets`/`fastapi`/`uvicorn`.
 dependencies = [
     "pyyaml>=6.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
