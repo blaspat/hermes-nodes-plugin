@@ -275,7 +275,12 @@ class NodeEnvironment:
         Raises:
             NodeNotConnectedError: The target node is not in the
                 registry (never paired, dropped, or replaced).
-                Raised immediately; no wire roundtrip.
+                Raised immediately; no wire roundtrip. The
+                ``str(exc)`` is the spec'd FR-3.4 message —
+                ``"node 'X' is not connected; check 'hermes node
+                list' to see its current state"`` — and is part
+                of the agent-facing contract, not free-form
+                text.
             NodeExecutionError: The node returned a structured
                 ``exec_result`` with ``status="error"`` or
                 ``status="timeout"``. The exception's ``.code``
@@ -325,8 +330,15 @@ class NodeEnvironment:
                 error="node not connected",
             )
             raise NodeNotConnectedError(
+                # FR-3.4: the user-visible string is part of the
+                # contract. ``!r`` quotes the target with single
+                # quotes by default (switches to double only if the
+                # string contains a single quote), which matches
+                # the spec literally. The trailing hint points the
+                # agent at the canonical "what's connected right
+                # now" command.
                 f"node {self._target!r} is not connected; "
-                "pair it (Task 2.10) or wait for the next heartbeat"
+                "check 'hermes node list' to see its current state"
             )
 
         # Step 2: build the request envelope. PROTOCOL §3.6 says
@@ -488,6 +500,7 @@ class NodeEnvironment:
 
         Raises:
             NodeNotConnectedError: Target is not in the registry.
+                See FR-3.4 — the message is the spec'd contract.
             NodeReadError: The node returned a ``read_result`` with
                 ``status="error"`` (e.g. ``path_not_allowed``,
                 ``file_not_found``, ``file_too_large``). The
@@ -548,6 +561,7 @@ class NodeEnvironment:
             ValueError: ``mode`` is not one of the three allowed
                 values (caught up front; no wire roundtrip).
             NodeNotConnectedError: Target is not in the registry.
+                See FR-3.4 — the message is the spec'd contract.
             NodeReadError: The node returned a ``write_result``
                 with ``status="error"`` (e.g. ``path_not_allowed``,
                 ``io_error``). The exception's ``.code`` attribute
@@ -615,8 +629,15 @@ class NodeEnvironment:
                 error="node not connected",
             )
             raise NodeNotConnectedError(
+                # FR-3.4: the user-visible string is part of the
+                # contract. ``!r`` quotes the target with single
+                # quotes by default (switches to double only if the
+                # string contains a single quote), which matches
+                # the spec literally. The trailing hint points the
+                # agent at the canonical "what's connected right
+                # now" command.
                 f"node {self._target!r} is not connected; "
-                "pair it (Task 2.10) or wait for the next heartbeat"
+                "check 'hermes node list' to see its current state"
             )
 
         payload = payload_builder(request_id)
