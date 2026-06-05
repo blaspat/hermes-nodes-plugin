@@ -27,10 +27,11 @@ def register(ctx) -> None:
       collision) logs and skips rather than raising, so a broken
       plugin cannot take down the host. See
       :mod:`hermes_nodes_plugin.lifecycle` for the runner details.
-    * **CLI subcommand** — registers ``hermes node`` so the surface
-      appears once the plugin auto-loads. The full
-      ``pair``/``list``/``revoke`` argparse tree lands in Task 2.10;
-      a ``status`` stub is present now.
+    * **CLI subcommand** — registers ``hermes node pair`` /
+      ``hermes node list`` / ``hermes node revoke`` /
+      ``hermes node status`` via ``ctx.register_cli_command``
+      (Task 2.10). The argparse tree lives in
+      :mod:`hermes_nodes_plugin.cli`.
     * **Kate tools** (Task 2.8) — registers ``node_exec``,
       ``node_read``, ``node_write``, ``node_list`` via
       ``ctx.register_tool``. The tool bodies live in

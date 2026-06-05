@@ -413,59 +413,35 @@ async def _on_session_end() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI subcommand (stub for Task 2.6; full surface lands in Task 2.10)
+# CLI subcommand (Task 2.10 — real surface lives in hermes_nodes_plugin.cli)
 # ---------------------------------------------------------------------------
 
 
-def _node_subcommand_help() -> str:
-    return (
-        "Manage paired hermes-nodes (WSS node server). "
-        "Subcommands `pair`/`list`/`revoke` land in Task 2.10; "
-        "this stub is present so `hermes node` appears once the "
-        "plugin is installed."
-    )
-
-
 def setup_node_subcommand(subparser: argparse.ArgumentParser) -> None:
-    """Argparse setup for the ``hermes node`` subcommand.
+    """Argparse setup for ``hermes node`` — delegates to :mod:`cli`.
 
-    Task 2.10 replaces this with the real ``pair`` / ``list`` /
-    ``revoke`` parser tree. For now we add a single ``status``
-    action that reports whether the default runner is up — enough
-    to verify plugin auto-load from the CLI.
-
-    The ``func`` default is set so ``hermes node`` without a
-    subcommand prints help instead of crashing.
+    The real ``pair`` / ``list`` / ``revoke`` / ``status`` argparse
+    tree lives in :func:`hermes_nodes_plugin.cli.setup_node_cli`
+    (Task 2.10). This shim remains so the import in
+    :mod:`hermes_nodes_plugin.__init__` and the existing test
+    (``test_register_adds_node_cli_subcommand``) keep working
+    without modification.
     """
-    subparser.description = _node_subcommand_help()
-    subs = subparser.add_subparsers(dest="node_action")
+    from hermes_nodes_plugin.cli import setup_node_cli
 
-    # Registered for `hermes node status --help`; the dispatch happens
-    # in :func:`_node_command_dispatch`. The local binding is dropped
-    # (add_subparsers/add_parser's return value is the only side effect
-    # we care about).
-    subs.add_parser(
-        "status",
-        help="Show whether the WSS node server is running.",
-    )
-
-    subparser.set_defaults(func=_node_command_dispatch)
+    setup_node_cli(subparser)
 
 
 def _node_command_dispatch(args: argparse.Namespace) -> int:
-    """Default dispatch for ``hermes node`` subcommands."""
-    action = getattr(args, "node_action", None)
-    if not action:
-        # ``hermes node`` with no subcommand: print help.
-        return 0
-    if action == "status":
-        runner = _default_runner
-        if runner is None or not runner.is_running:
-            print("hermes-nodes server: not running")
-            return 1
-        print(f"hermes-nodes server: listening on {runner.host}:{runner.port}")
-        return 0
-    return 2
+    """Default dispatch for ``hermes node`` subcommands.
+
+    Kept as a thin wrapper for backward compat with any code that
+    imports it directly. The real dispatch lives in
+    :func:`hermes_nodes_plugin.cli.node_command`.
+    """
+    from hermes_nodes_plugin.cli import node_command
+
+    return node_command(args)
 
 
 __all__ = [
