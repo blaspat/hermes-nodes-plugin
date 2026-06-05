@@ -31,6 +31,11 @@ def register(ctx) -> None:
       appears once the plugin auto-loads. The full
       ``pair``/``list``/``revoke`` argparse tree lands in Task 2.10;
       a ``status`` stub is present now.
+    * **Kate tools** (Task 2.8) — registers ``node_exec``,
+      ``node_read``, ``node_write``, ``node_list`` via
+      ``ctx.register_tool``. The tool bodies live in
+      :mod:`hermes_nodes_plugin.tools`; this file just hands them
+      to the host registry.
 
     Args:
         ctx: A :class:`hermes_cli.plugins.PluginContext` facade exposing
@@ -47,6 +52,7 @@ def register(ctx) -> None:
         _on_session_start,
         setup_node_subcommand,
     )
+    from hermes_nodes_plugin.tools import TOOLS
 
     try:
         ctx.register_hook("on_session_start", _on_session_start)
@@ -60,6 +66,18 @@ def register(ctx) -> None:
             setup_fn=setup_node_subcommand,
             handler_fn=None,
         )
+        # Kate tools (Task 2.8 / FR-3.2). Each entry in TOOLS is
+        # (name, schema, handler, emoji); the toolset is the
+        # plugin's own ("hermes_nodes") so users can enable /
+        # disable the whole surface from their Hermes config.
+        for name, schema, handler, emoji in TOOLS:
+            ctx.register_tool(
+                name=name,
+                toolset="hermes_nodes",
+                schema=schema,
+                handler=handler,
+                emoji=emoji,
+            )
     except Exception as exc:  # pragma: no cover — defensive
         # Never let a wiring bug take down the host. The Hermes loader
         # does catch ``register`` exceptions and logs them, but a

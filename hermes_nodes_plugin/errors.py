@@ -60,6 +60,26 @@ class NodeExecutionError(PluginError):
         self.code = code
 
 
+class NodeReadError(PluginError):
+    """A node returned a structured ``read_result`` or ``write_result`` with status=error.
+
+    Covers the file-I/O surface (``read``/``write`` in PROTOCOL
+    §3.8-3.11). One exception type for both directions keeps the
+    tool layer's error handling simple — the agent doesn't need
+    to distinguish a read failure from a write failure at the
+    catch site; the message says which.
+
+    Attributes:
+        code: The protocol error code mapped from the node's
+            ``error`` string (PROTOCOL §4). May be 0 for shape
+            violations the server couldn't categorise.
+    """
+
+    def __init__(self, message: str, *, code: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 __all__ = [
     "PluginError",
     "ConfigError",
@@ -67,4 +87,5 @@ __all__ = [
     "AuthError",
     "NodeNotConnectedError",
     "NodeExecutionError",
+    "NodeReadError",
 ]

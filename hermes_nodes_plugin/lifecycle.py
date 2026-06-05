@@ -70,6 +70,7 @@ from typing import Any
 
 import uvicorn
 
+from hermes_nodes_plugin.audit import default_audit_writer
 from hermes_nodes_plugin.config import NodeServerConfig, load_config
 from hermes_nodes_plugin.errors import ConfigError, TokenStoreError
 from hermes_nodes_plugin.registry import NodeRegistry
@@ -339,7 +340,32 @@ async def _on_session_start() -> None:
     gateway's session start isn't blocked by a misconfigured node
     server. The CLI subcommand (Task 2.10) is where the operator
     gets the clear "missing HERMES_NODES_TOKEN_KEY" error.
+
+    Side effect: purges audit-log rotations older than
+    ``audit_retention_days`` (FR-5.4). The purge runs *before*
+    the runner starts so a multi-GB leaked log from a previous
+    install does not slow down the first call of the new
+    session. Failures here are logged and swallowed — they
+    must not block the gateway.
     """
+    try:
+        # Resolve the audit writer eagerly so the purge happens
+        # at session start (when operators are paying attention
+        # to log warnings) rather than mid-call. ``close`` on
+        # the writer is a no-op until the first ``record`` opens
+        # the file, so the cost is purely config resolution.
+        audit = default_audit_writer()
+        try:
+            purged = audit.purge_expired_rotations()
+            if purged:
+                logger.info(
+                    "hermes-nodes: purged %d expired audit-log rotation(s)", purged
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("hermes-nodes: audit purge failed: %s", exc)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("hermes-nodes: audit writer init failed: %s", exc)
+
     try:
         runner = get_default_runner()
     except (ConfigError, TokenStoreError) as exc:
@@ -352,6 +378,7 @@ async def _on_session_start() -> None:
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("hermes-nodes: unexpected error building runner: %s", exc)
         return
+
     try:
         await runner.start()
     except Exception as exc:  # pragma: no cover — defensive
@@ -365,14 +392,24 @@ async def _on_session_end() -> None:
     gateway is shutting down regardless. A stale runner leaks
     uvicorn at worst; we'd rather that than a noisy traceback on
     every session boundary.
+
+    Also flushes the audit writer so the last few rows of the
+    session land on disk before the process exits. A graceful
+    drain that leaves the audit log unflushed would lose the
+    most recent call entries on the next cold start.
     """
     runner = _default_runner
-    if runner is None:
-        return
+    if runner is not None:
+        try:
+            await runner.drain(timeout=5.0)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("hermes-nodes: runner.drain() failed: %s", exc)
     try:
-        await runner.drain(timeout=5.0)
+        from hermes_nodes_plugin.audit import reset_default_audit_writer
+
+        reset_default_audit_writer()
     except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("hermes-nodes: runner.drain() failed: %s", exc)
+        logger.warning("hermes-nodes: audit close failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
