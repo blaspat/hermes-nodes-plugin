@@ -56,16 +56,27 @@ commit to keep the scope tight.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import time
 import uuid
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from fastapi import WebSocket
 
+from hermes_nodes_plugin.audit import (
+    AuditWriter,
+    STATUS_ERROR,
+    STATUS_NOT_CONNECTED,
+    STATUS_OK,
+    STATUS_TIMEOUT,
+    default_audit_writer,
+)
 from hermes_nodes_plugin.errors import (
     NodeExecutionError,
     NodeNotConnectedError,
+    NodeReadError,
 )
 from hermes_nodes_plugin.registry import (
     NodeRegistry,
@@ -79,6 +90,28 @@ logger = logging.getLogger(__name__)
 # default (``timeout_ms=60000`` per PROTOCOL §3.6). The brain can
 # override per-call via ``execute(..., timeout=...)``.
 DEFAULT_EXEC_TIMEOUT_SECONDS = 60.0
+
+
+# Hard cap on a single file transferred via ``read`` / ``write``.
+# Matches PROTOCOL §3.9 — the node refuses files larger than this
+# with ``error: "file_too_large"`` rather than truncating silently.
+# Exposed as a module constant so the tool layer can show the
+# limit in error messages and so tests don't repeat the literal.
+MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+# Map of PROTOCOL §4 ``error`` string names → integer codes for
+# ``read_result`` / ``write_result`` failures. Used by the decoders
+# to populate :attr:`NodeReadError.code` so callers can branch on
+# the structured code rather than parsing the error string.
+# Unknown names fall back to ``0`` (shape violation sentinel).
+_ERROR_CODE_BY_NAME: dict[str, int] = {
+    "path_not_allowed": 2001,
+    "file_not_found": 2002,
+    "file_too_large": 2003,
+    "permission_denied": 2004,
+    "io_error": 2005,
+}
 
 
 class NodeEnvironment:
@@ -126,6 +159,7 @@ class NodeEnvironment:
         *,
         registry: NodeRegistry | None = None,
         timeout: float = DEFAULT_EXEC_TIMEOUT_SECONDS,
+        audit: AuditWriter | None = None,
     ) -> None:
         if not target:
             raise ValueError("NodeEnvironment target must be a non-empty string")
@@ -134,6 +168,13 @@ class NodeEnvironment:
         self._target = target
         self._registry = registry if registry is not None else NodeRegistry()
         self._timeout = float(timeout)
+        # ``audit=None`` (the default) resolves to the process-wide
+        # singleton writer built from ``NodeServerConfig`` — that is
+        # the right choice for production callers wired by the
+        # plugin lifecycle. Tests pass an explicit writer so they
+        # can inspect or stub the audit path without touching the
+        # real ``~/.hermes/logs`` directory.
+        self._audit: AuditWriter = audit if audit is not None else default_audit_writer()
 
     # -- introspection (for tests + the eventual tool wrappers) -----------
 
@@ -146,6 +187,48 @@ class NodeEnvironment:
     def timeout(self) -> float:
         """The default per-call timeout in seconds."""
         return self._timeout
+
+    # -- audit hook (Task 2.9) --------------------------------------------
+
+    def _record_audit(
+        self,
+        *,
+        action: str,
+        request_id: str,
+        started_at: float,
+        status: str,
+        exit_code: int = 0,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort append one audit row for the just-finished call.
+
+        ``started_at`` is a :func:`time.monotonic` reference; we
+        convert to elapsed milliseconds and pass to the writer. The
+        method never raises — a broken audit log must not break a
+        real call. See :class:`AuditWriter` for the disk format.
+        """
+        elapsed_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        # ``record`` itself swallows I/O errors and returns ``False``;
+        # the wrapper is defensive belt-and-braces.
+        try:
+            self._audit.record(
+                action=action,
+                node=self._target,
+                request_id=request_id,
+                duration_ms=elapsed_ms,
+                status=status,
+                exit_code=exit_code,
+                error=error,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "hermes-nodes: audit record raised unexpectedly "
+                "(action=%r, node=%r, status=%r): %s",
+                action,
+                self._target,
+                status,
+                exc,
+            )
 
     # -- the actual interface ---------------------------------------------
 
@@ -214,16 +297,33 @@ class NodeEnvironment:
         if not command:
             # Match local ``BaseEnvironment.execute``'s stance: an
             # empty command is a no-op that exits 0. Cheaper than
-            # wasting a wire roundtrip.
+            # wasting a wire roundtrip. No audit row is written
+            # for this path — no request_id was generated, so the
+            # row would be unfindable in the log.
             return {"output": "", "returncode": 0}
 
         effective_timeout = float(timeout) if timeout is not None else self._timeout
+        # Mark the audit clock before any awaitable so the recorded
+        # ``duration_ms`` reflects end-to-end latency, including
+        # the "node is offline" check. ``request_id`` is generated
+        # up front for the same reason: a not-connected row in
+        # the audit log needs an id to be correlatable.
+        request_id = str(uuid.uuid4())
+        started_at = time.monotonic()
 
         # Step 1: confirm the node is connected. We do this *after*
         # generating the request_id and *before* registering the
         # waiter so a not-connected call doesn't leak a dict entry.
         conn = await self._registry.get(self._target)
         if conn is None:
+            self._record_audit(
+                action="exec",
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_NOT_CONNECTED,
+                exit_code=-1,
+                error="node not connected",
+            )
             raise NodeNotConnectedError(
                 f"node {self._target!r} is not connected; "
                 "pair it (Task 2.10) or wait for the next heartbeat"
@@ -234,7 +334,6 @@ class NodeEnvironment:
         # required. ``cwd``, ``env``, ``timeout_ms`` are optional;
         # we omit them when the caller didn't supply values so
         # the node keeps its persistent state.
-        request_id = str(uuid.uuid4())
         payload: dict[str, Any] = {
             "type": "exec",
             "id": request_id,
@@ -264,11 +363,20 @@ class NodeEnvironment:
         future = await self._registry.register_waiter(self._target, request_id)
         try:
             await self._send(conn.websocket, payload)
-        except Exception:
+        except Exception as exc:
             # The send failed before the node ever saw the
             # request. Clean up the waiter so we don't leak a
-            # dict entry that will never resolve.
+            # dict entry that will never resolve, and record an
+            # error row so the audit log captures the attempt.
             await self._registry.unregister_waiter(self._target, request_id)
+            self._record_audit(
+                action="exec",
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_ERROR,
+                exit_code=-1,
+                error=f"send failed: {exc!r}",
+            )
             raise
 
         # Step 4: await the result, with timeout. The
@@ -288,6 +396,14 @@ class NodeEnvironment:
                 request_id,
                 effective_timeout,
             )
+            self._record_audit(
+                action="exec",
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_TIMEOUT,
+                exit_code=-1,
+                error=f"timed out after {effective_timeout:.1f}s",
+            )
             raise
         except _WaiterCancelled as exc:
             # The node disconnected (or was replaced) mid-call.
@@ -295,6 +411,14 @@ class NodeEnvironment:
             # already removed the future, so we don't need to
             # unregister it again — but we do want to translate
             # the internal sentinel into the public exception.
+            self._record_audit(
+                action="exec",
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_NOT_CONNECTED,
+                exit_code=-1,
+                error=f"node disconnected mid-call ({exc.reason})",
+            )
             raise NodeNotConnectedError(
                 f"node {self._target!r} disconnected mid-call ({exc.reason})"
             ) from exc
@@ -304,7 +428,371 @@ class NodeEnvironment:
         # ``type`` and ``id``; we still need to enforce the
         # shape we expect (``exec_result``, status, exit_code,
         # stdout, stderr).
-        return self._decode_exec_result(result, elapsed=elapsed)
+        try:
+            decoded = self._decode_exec_result(result, elapsed=elapsed)
+        except NodeExecutionError as exc:
+            self._record_audit(
+                action="exec",
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_ERROR,
+                exit_code=int(getattr(exc, "code", 0)) or -1,
+                error=str(exc),
+            )
+            raise
+        self._record_audit(
+            action="exec",
+            request_id=request_id,
+            started_at=started_at,
+            status=STATUS_OK,
+            exit_code=int(decoded.get("returncode", 0)),
+        )
+        return decoded
+
+    # -- file I/O (Task 2.8) -----------------------------------------------
+
+    async def read(
+        self,
+        path: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Read a file from the target node and return its bytes.
+
+        Per PROTOCOL §3.8 / §3.9, the node reads the file as bytes
+        and returns it base64-encoded. We decode that on this side
+        and surface a dict shaped to match the local ``read_file``
+        tool's contract: ``{"content": str, "size_bytes": int,
+        "truncated": bool, "encoding": "utf-8"}``. ``content`` is
+        decoded as UTF-8 with ``errors="replace"`` (per PROTOCOL
+        §3.5 the node already replaces invalid sequences with
+        U+FFFD, so this is a belt-and-braces second pass). Binary
+        callers that need the raw bytes should call the lower-level
+        environment directly — the agent's tool layer is text-first.
+
+        Args:
+            path: Absolute path on the node's filesystem. The
+                node's allowlist (PROTOCOL §3.8 / §3.10) gates this
+                on its end; we do NOT pre-validate paths so the
+                error reporting matches the node's own
+                ``path_not_allowed`` / ``file_not_found`` codes.
+            timeout: Per-call timeout in seconds. Overrides the
+                constructor's default. ``None`` means "use the
+                constructor default".
+
+        Returns:
+            ``{"content": str, "size_bytes": int, "truncated": bool,
+            "encoding": "utf-8"}``. ``truncated`` is forwarded
+            from the node's response (PROTOCOL §3.9 sets it when
+            the 10 MB cap was hit).
+
+        Raises:
+            NodeNotConnectedError: Target is not in the registry.
+            NodeReadError: The node returned a ``read_result`` with
+                ``status="error"`` (e.g. ``path_not_allowed``,
+                ``file_not_found``, ``file_too_large``). The
+                exception's ``.code`` attribute carries the
+                protocol error code from PROTOCOL §4.
+            asyncio.TimeoutError: Call didn't complete within
+                ``timeout`` seconds.
+            RuntimeError: WebSocket refused the outbound frame.
+        """
+        return await self._read_or_write(
+            wire_type="read",
+            payload_builder=lambda request_id: {
+                "type": "read",
+                "id": request_id,
+                "path": path,
+            },
+            timeout=timeout,
+            decode=self._decode_read_result,
+        )
+
+    async def write(
+        self,
+        path: str,
+        content: str,
+        *,
+        mode: str = "overwrite",
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Write text to a file on the target node.
+
+        Per PROTOCOL §3.10, the wire payload is base64-encoded
+        bytes. We UTF-8-encode ``content`` on this side so the
+        tool layer can hand a plain string. The node writes
+        the bytes verbatim (no encoding assumption), so a binary
+        caller would need a different surface — out of scope
+        for v1.
+
+        Args:
+            path: Absolute path on the node's filesystem. Gated
+                by the node's allowlist.
+            content: UTF-8 text to write. The encoding is
+                intentional: the agent's file tools are
+                text-first, and a binary path can layer on top
+                later if needed.
+            mode: One of ``"create"``, ``"overwrite"`` (default),
+                or ``"append"`` per PROTOCOL §3.10.
+            timeout: Per-call timeout in seconds. Overrides the
+                constructor's default.
+
+        Returns:
+            ``{"bytes_written": int, "mode": str, "path": str}``
+            — ``bytes_written`` is whatever the node reported,
+            which is the post-encode byte count of what landed
+            on disk (i.e. UTF-8 byte length of ``content`` for
+            valid input).
+
+        Raises:
+            ValueError: ``mode`` is not one of the three allowed
+                values (caught up front; no wire roundtrip).
+            NodeNotConnectedError: Target is not in the registry.
+            NodeReadError: The node returned a ``write_result``
+                with ``status="error"`` (e.g. ``path_not_allowed``,
+                ``io_error``). The exception's ``.code`` attribute
+                carries the protocol error code.
+            asyncio.TimeoutError: Call didn't complete within
+                ``timeout`` seconds.
+            RuntimeError: WebSocket refused the outbound frame.
+        """
+        if mode not in ("create", "overwrite", "append"):
+            raise ValueError(
+                f"mode must be one of 'create' | 'overwrite' | 'append', got {mode!r}"
+            )
+
+        content_bytes = content.encode("utf-8")
+        content_b64 = base64.b64encode(content_bytes).decode("ascii")
+        return await self._read_or_write(
+            wire_type="write",
+            payload_builder=lambda request_id: {
+                "type": "write",
+                "id": request_id,
+                "path": path,
+                "content_b64": content_b64,
+                "mode": mode,
+            },
+            # The 16 MB WSS frame cap (PROTOCOL §9) is the
+            # ultimate gate; client-side size enforcement lives
+            # in the ``tools.node_write`` wrapper. Here we
+            # only need to construct the wire payload.
+            timeout=timeout,
+            decode=lambda raw: self._decode_write_result(raw, path=path, mode=mode),
+        )
+
+    async def _read_or_write(
+        self,
+        *,
+        wire_type: str,
+        payload_builder: Callable[[str], dict[str, Any]],
+        timeout: float | None,
+        decode: Callable[[Any], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Shared dispatch path for ``read`` and ``write``.
+
+        Both methods follow the same shape as :meth:`execute`:
+        confirm the node is connected, register a waiter, send
+        the request, await the result with a timeout, decode.
+        Factoring it out keeps the per-method bodies focused on
+        the protocol-specific payload / result shape.
+
+        Audit rows are written on every exit path so the log
+        captures the outcome (or the failure) of every call —
+        the FR-5.1 acceptance criterion.
+        """
+        effective_timeout = float(timeout) if timeout is not None else self._timeout
+        request_id = str(uuid.uuid4())
+        started_at = time.monotonic()
+
+        conn = await self._registry.get(self._target)
+        if conn is None:
+            self._record_audit(
+                action=wire_type,
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_NOT_CONNECTED,
+                exit_code=-1,
+                error="node not connected",
+            )
+            raise NodeNotConnectedError(
+                f"node {self._target!r} is not connected; "
+                "pair it (Task 2.10) or wait for the next heartbeat"
+            )
+
+        payload = payload_builder(request_id)
+
+        future = await self._registry.register_waiter(self._target, request_id)
+        try:
+            await self._send(conn.websocket, payload)
+        except Exception as exc:
+            await self._registry.unregister_waiter(self._target, request_id)
+            self._record_audit(
+                action=wire_type,
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_ERROR,
+                exit_code=-1,
+                error=f"send failed: {exc!r}",
+            )
+            raise
+
+        try:
+            result = await asyncio.wait_for(future, timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            await self._registry.unregister_waiter(self._target, request_id)
+            logger.warning(
+                "%s on %r (id=%s) timed out after %.1fs",
+                wire_type,
+                self._target,
+                request_id,
+                effective_timeout,
+            )
+            self._record_audit(
+                action=wire_type,
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_TIMEOUT,
+                exit_code=-1,
+                error=f"timed out after {effective_timeout:.1f}s",
+            )
+            raise
+        except _WaiterCancelled as exc:
+            self._record_audit(
+                action=wire_type,
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_NOT_CONNECTED,
+                exit_code=-1,
+                error=f"node disconnected mid-{wire_type} ({exc.reason})",
+            )
+            raise NodeNotConnectedError(
+                f"node {self._target!r} disconnected mid-{wire_type} ({exc.reason})"
+            ) from exc
+
+        try:
+            decoded = decode(result)
+        except NodeReadError as exc:
+            self._record_audit(
+                action=wire_type,
+                request_id=request_id,
+                started_at=started_at,
+                status=STATUS_ERROR,
+                exit_code=int(getattr(exc, "code", 0)) or -1,
+                error=str(exc),
+            )
+            raise
+        self._record_audit(
+            action=wire_type,
+            request_id=request_id,
+            started_at=started_at,
+            status=STATUS_OK,
+            exit_code=0,
+        )
+        return decoded
+
+    @staticmethod
+    def _decode_read_result(result: Any) -> dict[str, Any]:
+        """Turn a ``read_result`` payload into the tool-layer shape.
+
+        Contract (PROTOCOL §3.9):
+
+        * ``status="ok"`` → ``content_b64`` and ``size_bytes`` are
+          present. We base64-decode and UTF-8-decode (with
+          replacement) to give the agent a plain string.
+        * ``status="error"`` → ``error`` and ``error_detail`` are
+          present. We raise :class:`NodeReadError` with the
+          protocol's error string (PROTOCOL §4 maps these to
+          integer codes; the error *string* is the more
+          agent-friendly identifier).
+
+        A malformed payload (missing ``type``, non-dict, etc.)
+        raises :class:`NodeReadError` with code 0 — mirrors the
+        :meth:`_decode_exec_result` defensive stance.
+        """
+        if not isinstance(result, dict):
+            raise NodeReadError(
+                f"node returned non-dict read_result: {result!r}",
+                code=0,
+            )
+        msg_type = result.get("type")
+        if msg_type != "read_result":
+            raise NodeReadError(
+                f"node returned {msg_type!r} where read_result was expected",
+                code=0,
+            )
+
+        if result.get("status") == "error":
+            error_name = str(result.get("error") or "unknown")
+            detail = str(result.get("error_detail") or "")
+            raise NodeReadError(
+                f"node read failed: {error_name} ({detail})",
+                code=_ERROR_CODE_BY_NAME.get(error_name, 0),
+            )
+
+        content_b64 = result.get("content_b64", "")
+        try:
+            raw_bytes = base64.b64decode(content_b64, validate=False)
+        except (binascii.Error, ValueError) as exc:
+            raise NodeReadError(
+                f"node returned malformed content_b64: {exc}",
+                code=0,
+            ) from exc
+        # Replace invalid sequences with U+FFFD — the node already
+        # did this (PROTOCOL §3.5) but we re-run it as a safety net
+        # in case a future node version is lax.
+        content = raw_bytes.decode("utf-8", errors="replace")
+        size_bytes = int(result.get("size_bytes") or len(raw_bytes))
+        truncated = bool(result.get("truncated", False))
+        return {
+            "content": content,
+            "size_bytes": size_bytes,
+            "truncated": truncated,
+            "encoding": "utf-8",
+        }
+
+    @staticmethod
+    def _decode_write_result(
+        result: Any, *, path: str, mode: str
+    ) -> dict[str, Any]:
+        """Turn a ``write_result`` payload into the tool-layer shape.
+
+        Contract (PROTOCOL §3.11):
+
+        * ``status="ok"`` → ``bytes_written`` is present. We
+          return a small ack dict the agent can show to the user.
+        * ``status="error"`` → ``error`` and ``error_detail`` are
+          present. We raise :class:`NodeReadError` (named for
+          the file-I/O family; the tool layer doesn't currently
+          branch on it) with the protocol's error string.
+
+        A malformed payload (missing ``type``, non-dict, etc.)
+        raises :class:`NodeReadError` with code 0.
+        """
+        if not isinstance(result, dict):
+            raise NodeReadError(
+                f"node returned non-dict write_result: {result!r}",
+                code=0,
+            )
+        msg_type = result.get("type")
+        if msg_type != "write_result":
+            raise NodeReadError(
+                f"node returned {msg_type!r} where write_result was expected",
+                code=0,
+            )
+
+        if result.get("status") == "error":
+            error_name = str(result.get("error") or "unknown")
+            detail = str(result.get("error_detail") or "")
+            raise NodeReadError(
+                f"node write failed: {error_name} ({detail})",
+                code=_ERROR_CODE_BY_NAME.get(error_name, 0),
+            )
+
+        return {
+            "bytes_written": int(result.get("bytes_written") or 0),
+            "mode": mode,
+            "path": path,
+        }
 
     async def cleanup(self) -> None:
         """Release any per-environment resources. No-op for nodes.
@@ -438,4 +926,8 @@ class NodeEnvironment:
         return {"output": output, "returncode": rc}
 
 
-__all__ = ["NodeEnvironment", "DEFAULT_EXEC_TIMEOUT_SECONDS"]
+__all__ = [
+    "NodeEnvironment",
+    "DEFAULT_EXEC_TIMEOUT_SECONDS",
+    "MAX_FILE_BYTES",
+]

@@ -17,6 +17,14 @@ prefix and lowercased):
   * ``token_store_path``          (str)   default ``~/.hermes/nodes/tokens.json``
   * ``token_encryption_key_env``  (str)   default ``"HERMES_NODES_TOKEN_KEY"``
     — the *name* of the env var that holds the Fernet key, not the key itself.
+  * ``audit_log_path``            (str)   default ``~/.hermes/logs/nodes-audit.log``
+    — path to the append-only JSONL audit log (FR-5.1). The audit
+    module also accepts ``HERMES_NODES_AUDIT_LOG_PATH`` as a
+    direct override; see :mod:`hermes_nodes_plugin.audit`.
+  * ``audit_retention_days``      (int)   default ``365``
+    — how long rotated audit files are kept before being purged
+    (FR-5.4). The audit module also accepts
+    ``HERMES_NODES_AUDIT_RETENTION_DAYS`` as a direct override.
 
 Type coercion rules (applied uniformly to env and file values):
 
@@ -75,6 +83,19 @@ class NodeServerConfig:
     # Name of the env var that holds the Fernet key for the token store.
     # Not the key itself — see REQUIREMENTS.md FR-4.1/FR-4.2.
     token_encryption_key_env: str = "HERMES_NODES_TOKEN_KEY"
+    # Path to the append-only JSONL audit log (FR-5.1). The audit
+    # module also accepts ``HERMES_NODES_AUDIT_LOG_PATH`` as a
+    # direct override, which beats this value. The default is
+    # duplicated as a literal here to avoid a circular import
+    # (``audit`` imports this dataclass); keep in sync with
+    # ``hermes_nodes_plugin.audit.DEFAULT_AUDIT_LOG_PATH``.
+    audit_log_path: str = "~/.hermes/logs/nodes-audit.log"
+    # Retention window for rotated audit files (FR-5.4). The audit
+    # module also accepts ``HERMES_NODES_AUDIT_RETENTION_DAYS``.
+    # See ``hermes_nodes_plugin.audit.DEFAULT_RETENTION_DAYS`` for
+    # the source of truth (kept as a literal here to break the
+    # ``audit`` ↔ ``config`` import cycle).
+    audit_retention_days: int = 365
 
     def __post_init__(self) -> None:
         # TLS partial-config is the most common deployment footgun: an
@@ -87,6 +108,10 @@ class NodeServerConfig:
                 "must both be set or both be unset. "
                 f"Got tls_cert_path={self.tls_cert_path!r}, "
                 f"tls_key_path={self.tls_key_path!r}."
+            )
+        if self.audit_retention_days <= 0:
+            raise ConfigError(
+                f"audit_retention_days must be > 0, got {self.audit_retention_days!r}"
             )
 
     # -- predicates ---------------------------------------------------------
@@ -239,6 +264,33 @@ def _build(
         key="token_encryption_key_env", env=env, file_data=file_data
     )
 
+    # -- audit log path (str) ----------------------------------------------
+    audit_log_raw = _resolve_str(key="audit_log_path", env=env, file_data=file_data)
+
+    # -- audit retention days (int) ----------------------------------------
+    audit_retention_raw: Any = None
+    audit_retention_source = "default"
+    if env.get("HERMES_NODES_AUDIT_RETENTION_DAYS") is not None:
+        audit_retention_raw = env["HERMES_NODES_AUDIT_RETENTION_DAYS"]
+        audit_retention_source = "env"
+    elif _read_file_value(file_data, "audit_retention_days") is not None:
+        audit_retention_raw = _read_file_value(file_data, "audit_retention_days")
+        audit_retention_source = "file"
+    audit_retention: int | None = None
+    if audit_retention_raw is not None:
+        try:
+            audit_retention = int(audit_retention_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{audit_retention_source}: audit_retention_days must be an integer, "
+                f"got {audit_retention_raw!r}"
+            ) from exc
+        if audit_retention <= 0:
+            raise ConfigError(
+                f"{audit_retention_source}: audit_retention_days must be > 0, "
+                f"got {audit_retention}"
+            )
+
     # Now assemble. We use a partial dict + NodeServerConfig defaults for
     # any key we didn't resolve — dataclass handles the "default" leg of
     # the precedence chain.
@@ -255,6 +307,10 @@ def _build(
         resolved["token_store_path"] = str(token_store_raw)
     if key_env_raw is not None:
         resolved["token_encryption_key_env"] = str(key_env_raw)
+    if audit_log_raw is not None:
+        resolved["audit_log_path"] = str(audit_log_raw)
+    if audit_retention is not None:
+        resolved["audit_retention_days"] = audit_retention
 
     return NodeServerConfig(**resolved)
 
