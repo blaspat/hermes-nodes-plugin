@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -48,6 +49,7 @@ from hermes_nodes_plugin.audit import (
     STATUS_NOT_CONNECTED,
     STATUS_OK,
     AuditConfig,
+    AuditError,
     AuditWriter,
     default_audit_writer,
     reset_default_audit_writer,
@@ -412,6 +414,90 @@ class TestAuditWriterRecord:
             status=STATUS_OK,
         )
         assert ok is False
+
+    def test_rotation_failure_does_not_propagate(
+        self,
+        audit_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """``record()`` honours its never-raises contract when rotation blows up.
+
+        Regression for Issue #11: ``_rotate_locked`` raises
+        ``AuditError`` on filesystem errors (rename failure, perm
+        denied, etc.). ``record()`` must catch that, log a WARNING,
+        and return ``False`` so the calling pipeline (node_exec /
+        node_read / node_write) is not aborted by an audit-only
+        failure.
+        """
+        w = AuditWriter(path=audit_path, max_bytes=50, keep=2)
+        try:
+            boom = AuditError("simulated rotation failure (issue #11)")
+
+            def _raise_audit_error() -> None:
+                raise boom
+
+            monkeypatch.setattr(w, "_rotate_locked", _raise_audit_error)
+
+            for i in range(5):
+                w.record(
+                    action="exec",
+                    node="laptop",
+                    request_id=f"pre-{i}",
+                    duration_ms=1,
+                    status=STATUS_OK,
+                    exit_code=0,
+                )
+
+            with caplog.at_level(
+                logging.WARNING, logger="hermes_nodes_plugin.audit"
+            ):
+                ok = w.record(
+                    action="exec",
+                    node="laptop",
+                    request_id="post-rotation",
+                    duration_ms=1,
+                    status=STATUS_OK,
+                    exit_code=0,
+                )
+            assert ok is False
+            assert any(
+                "simulated rotation failure (issue #11)" in rec.message
+                for rec in caplog.records
+            ), "rotation failure must be logged at WARNING"
+        finally:
+            w.close()
+
+    def test_audit_error_outside_rotation_does_not_propagate(
+        self,
+        audit_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Any ``AuditError`` raised inside the record critical section is swallowed.
+
+        Guards against future refactors that might raise
+        ``AuditError`` from a different point (open, fsync, etc.).
+        The contract is method-wide: ``record()`` never raises
+        for I/O or audit-internal failures.
+        """
+        w = AuditWriter(path=audit_path, max_bytes=200, keep=2)
+        try:
+            boom = AuditError("simulated internal failure")
+
+            def _raise_audit_error() -> None:
+                raise boom
+
+            monkeypatch.setattr(w, "_ensure_open_locked", _raise_audit_error)
+            ok = w.record(
+                action="exec",
+                node="laptop",
+                request_id="r1",
+                duration_ms=1,
+                status=STATUS_OK,
+            )
+            assert ok is False
+        finally:
+            w.close()
 
 
 # ---------------------------------------------------------------------------

@@ -314,8 +314,11 @@ class AuditWriter:
         Returns:
             ``True`` on a successful write; ``False`` if the write
             failed for any reason (path unwritable, marshal error,
-            etc.). The plugin never raises from this method — a
-            broken audit log is bad but losing a node call is worse.
+            rotation failure, etc.). The plugin never raises from
+            this method — a broken audit log is bad but losing a
+            node call is worse. Rotation failures are logged at
+            WARNING and swallowed so a transient filesystem hiccup
+            does not abort the calling pipeline (Issue #11).
 
         Raises:
             ValueError: ``node`` empty, ``request_id`` empty, or
@@ -395,11 +398,13 @@ class AuditWriter:
                         # and the next write would have flushed
                         # anyway, so swallow.
                         pass
-        except (OSError, ValueError) as exc:
-            # I/O or marshal failure. Don't raise — losing the
-            # audit row is bad, but losing the user's call is
-            # worse. The WARNING surfaces in ``hermes logs`` for
-            # operator triage.
+        except (OSError, ValueError, AuditError) as exc:
+            # I/O, marshal, or rotation failure. Don't raise —
+            # losing the audit row is bad, but losing the user's
+            # call is worse. The WARNING surfaces in ``hermes
+            # logs`` for operator triage. AuditError covers
+            # rotation errors that would otherwise violate the
+            # ``record()`` never-raises contract (Issue #11).
             logger.warning(
                 "hermes-nodes audit: failed to write entry "
                 "(node=%r, action=%r, status=%r): %s",
