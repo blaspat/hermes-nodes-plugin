@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from datetime import timedelta
 from typing import Any
 
 import uvicorn
@@ -115,6 +116,19 @@ class ServerRunner:
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
+        # Background sweep task (issue #19) — calls
+        # ``registry.stale()`` every ``heartbeat_sweep_interval_seconds``
+        # and closes any node whose ``last_heartbeat`` is older than
+        # ``heartbeat_stale_seconds``. Created in :meth:`start`,
+        # cancelled in :meth:`drain`.
+        self._sweep_task: asyncio.Task[None] | None = None
+        # ``_stop_sweep`` is set in :meth:`drain` to ask the sweep
+        # loop to exit at the top of its next iteration. We use an
+        # :class:`asyncio.Event` rather than a bare ``bool`` so the
+        # awaitable ``wait`` can be cancelled cleanly (the event's
+        # ``wait`` is the only thing we await, so cancelling the
+        # sweep task while it's sleeping unblocks immediately).
+        self._stop_sweep: asyncio.Event = asyncio.Event()
         # Expose the port for tests + the CLI; the config is the
         # source of truth, but having a flat attribute saves the
         # boilerplate in callers that just want ``runner.port``.
@@ -190,6 +204,16 @@ class ServerRunner:
 
         self._task = asyncio.create_task(_serve(), name="hermes-nodes-wss-server")
 
+        # Background sweep (issue #19). Created after the uvicorn
+        # task so the sweep is never running while the server isn't.
+        # We re-arm ``_stop_sweep`` in case the runner was
+        # start→drain→start-restart (drain clears it on the way down).
+        self._stop_sweep = asyncio.Event()
+        self._sweep_task = asyncio.create_task(
+            self._sweep_stale_connections(),
+            name="hermes-nodes-stale-sweep",
+        )
+
         # Wait for the server to actually be listening before
         # returning. ``Server.started`` is set inside ``startup``
         # after the socket binds; we poll on a short sleep to avoid
@@ -242,7 +266,34 @@ class ServerRunner:
         set), then awaits the background task. Active WebSocket
         connections receive a close frame; their own handlers
         unregister from the registry on disconnect.
+
+        Also stops the background stale-connection sweep (issue #19)
+        before awaiting the uvicorn task. The sweep is cheap, so the
+        drain timeout is unchanged.
         """
+        # Stop the sweep first (issue #19) so the loop exits at the
+        # top of its next iteration. ``_stop_sweep.set()`` is
+        # synchronous and safe to call here; awaiting the task itself
+        # is folded into the uvicorn-task wait below.
+        self._stop_sweep.set()
+        sweep_task = self._sweep_task
+        if sweep_task is not None and not sweep_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(sweep_task), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "hermes-nodes stale sweep did not exit within %.1fs; cancelling",
+                    timeout,
+                )
+                sweep_task.cancel()
+                try:
+                    await sweep_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning("hermes-nodes stale sweep raised on drain: %s", exc)
+        self._sweep_task = None
+
         server = self._server
         task = self._task
         if server is None or task is None:
@@ -270,6 +321,81 @@ class ServerRunner:
         finally:
             self._server = None
             self._task = None
+
+    async def _sweep_stale_connections(self) -> None:
+        """Background sweep: close dead nodes (PROTOCOL §6, issue #19).
+
+        Loops until :attr:`_stop_sweep` is set. On each tick:
+
+        1. ``await registry.stale(older_than=...)`` returns a snapshot
+           of nodes whose last_heartbeat is older than the configured
+           threshold. ``stale`` is read-only — it does NOT unregister.
+        2. For each candidate, call ``websocket.close()`` (via the
+           server module's ``_safe_close`` helper) with a normal
+           close code. The connection handler's ``finally`` block
+           then unregisters the node and fails any pending waiters.
+        3. Sleep for ``heartbeat_sweep_interval_seconds``, but bail
+           out immediately if the stop event fires.
+
+        Failures closing an individual WebSocket are logged and
+        swallowed — one dead socket must not poison the sweep loop
+        or take the server down.
+        """
+        from hermes_nodes_plugin.server import _safe_close
+
+        stale_after = timedelta(seconds=self._config.heartbeat_stale_seconds)
+        interval = self._config.heartbeat_sweep_interval_seconds
+
+        try:
+            while not self._stop_sweep.is_set():
+                try:
+                    candidates = await self._registry.stale(older_than=stale_after)
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning("hermes-nodes stale sweep query failed: %s", exc)
+                    candidates = []
+
+                for conn in candidates:
+                    if self._stop_sweep.is_set():
+                        break
+                    try:
+                        # ``_safe_close`` swallows "already closed"
+                        # errors so we don't double-log on a socket
+                        # that closed between the stale query and us
+                        # reaching this line.
+                        await _safe_close(conn.websocket, code=1000)
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            "hermes-nodes stale sweep: failed to close %r: %s",
+                            conn.name,
+                            exc,
+                        )
+                    else:
+                        logger.info(
+                            "hermes-nodes stale sweep: closed stale connection %r "
+                            "(idle > %ds)",
+                            conn.name,
+                            self._config.heartbeat_stale_seconds,
+                        )
+
+                # Sleep in 1s slices so the drain path can wake us
+                # within ~1s even on the longest interval. The
+                # ``wait_for`` is bounded by the remainder of the
+                # interval (or 0 if it's already past); the stop
+                # event is the *only* thing we wait on, so cancelling
+                # the sweep task unblocks it immediately.
+                try:
+                    await asyncio.wait_for(
+                        self._stop_sweep.wait(), timeout=interval
+                    )
+                except asyncio.TimeoutError:
+                    # Expected: interval elapsed, run another sweep.
+                    pass
+        except asyncio.CancelledError:
+            # Drain cancelled the sweep before the stop event fired.
+            # Re-raise so the cancelling task sees the cancellation.
+            raise
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("hermes-nodes stale sweep crashed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -312,20 +438,97 @@ def get_default_runner() -> ServerRunner:
     return _default_runner
 
 
-def reset_default_runner() -> None:
-    """Clear the singleton (tests only).
+async def reset_default_runner() -> None:
+    """Clear the singleton (tests only), awaiting its drain.
 
-    Drains first if the runner is still running, so we don't leave
-    uvicorn alive across tests. Drains on a fresh event loop if
-    needed (we can't await on the runner from a sync context).
+    Issue #20: the previous implementation synchronously cancelled
+    the runner's task without awaiting it. The cancel is a *signal*
+    — the actual shutdown is async, so a test that called
+    ``reset_default_runner`` and then immediately re-built a runner
+    could race the previous uvicorn's socket release and hit
+    ``EADDRINUSE``.
+
+    This coroutine drains first (so the port is actually free) and
+    then clears the singleton. Async tests should ``await`` it.
+
+    If there is no running runner, this is a cheap no-op.
     """
     global _default_runner
-    if _default_runner is not None and _default_runner.is_running:
-        # The runner is bound to a live loop. Best-effort: cancel the
-        # task without awaiting — tests own their own loops.
-        if _default_runner._task is not None:  # type: ignore[attr-defined]
-            _default_runner._task.cancel()  # type: ignore[attr-defined]
+    if _default_runner is None:
+        return
+    runner = _default_runner
     _default_runner = None
+    if not runner.is_running:
+        return
+    # 2s is enough for a clean drain (uvicorn propagates a close
+    # frame to active WebSockets, which usually completes in <100ms
+    # on loopback). If the drain doesn't finish in time, the runner
+    # is forcibly cancelled — see ServerRunner.drain.
+    await runner.drain(timeout=2.0)
+
+
+def reset_default_runner_sync(timeout: float = 5.0) -> None:
+    """Sync shim for :func:`reset_default_runner` (issue #20).
+
+    Some test paths (fixture teardown, session cleanup) call reset
+    from synchronous code that is *not* itself running inside a
+    coroutine. For that common case, the shim builds a fresh event
+    loop via :func:`asyncio.run` and drives the runner's drain on
+    it. By the time the shim returns, uvicorn is fully unwound
+    and the port is free.
+
+    This shim **must not be called from inside a running event
+    loop** (e.g. from within an async test that has its own
+    ``asyncio.run`` already in flight). The proper API for that
+    context is :func:`reset_default_runner` — `await` it. If we
+    detect this misuse we raise :class:`RuntimeError` with a
+    clear message rather than deadlocking the loop.
+
+    The shim is safe to call when there is no running runner
+    (returns immediately).
+
+    The ``timeout`` is independent of the runner's own drain
+    timeout: if the drain doesn't complete in ``timeout`` seconds
+    we surface a :class:`RuntimeError` rather than silently
+    leaking uvicorn into the next test.
+    """
+    global _default_runner
+    if _default_runner is None or not _default_runner.is_running:
+        # Either no runner yet, or the async test path already
+        # cleared it. No work to do.
+        return
+    runner = _default_runner
+    # Clear the global first so a concurrent ``get_default_runner()``
+    # rebuilds a fresh runner rather than picking up the one we're
+    # draining.
+    _default_runner = None
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — drive the drain on a fresh loop. This
+        # is the common sync-test path. ``asyncio.run`` builds a
+        # loop, runs the coroutine, and tears the loop down
+        # cleanly. By the time we return, the uvicorn task is
+        # fully unwound and the port is released.
+        try:
+            asyncio.run(runner.drain(timeout=2.0))
+        except Exception as exc:
+            raise RuntimeError(
+                f"reset_default_runner_sync: drain failed: {exc!r}"
+            ) from exc
+        return
+
+    # We're inside a running loop. The sync shim cannot block the
+    # loop's thread waiting for a coroutine on the same loop — the
+    # coroutine would never get scheduled. Tell the caller to use
+    # the async path.
+    raise RuntimeError(
+        "reset_default_runner_sync called from inside a running "
+        "event loop. Use `await reset_default_runner()` instead — "
+        "the sync shim cannot wait for a coroutine on the same loop "
+        "without deadlocking."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +651,7 @@ __all__ = [
     "ServerRunner",
     "get_default_runner",
     "reset_default_runner",
+    "reset_default_runner_sync",
     "_on_session_start",
     "_on_session_end",
     "setup_node_subcommand",

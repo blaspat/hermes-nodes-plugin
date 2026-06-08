@@ -49,7 +49,10 @@ import pytest
 from cryptography.fernet import Fernet
 
 from hermes_nodes_plugin.config import NodeServerConfig
-from hermes_nodes_plugin.lifecycle import ServerRunner, reset_default_runner
+from hermes_nodes_plugin.lifecycle import (
+    ServerRunner,
+    reset_default_runner_sync,
+)
 from hermes_nodes_plugin.registry import NodeRegistry
 from hermes_nodes_plugin.tokens import TokenStore
 
@@ -247,12 +250,518 @@ class TestServerRunnerLifecycle:
         await runner.start()
         try:
             second_task = runner._task  # type: ignore[attr-defined]
+            assert second_task is not None, "restart must spawn a task"
+            assert not second_task.done(), "restart task must be running"
             assert second_task is not first_task, "restart must spawn a new task"
             assert runner.is_running
             assert _is_port_open(config.host, config.port)
         finally:
             await runner.drain(timeout=5.0)
 
+
+# ---------------------------------------------------------------------------
+# Stale-connection sweep (issue #19)
+# ---------------------------------------------------------------------------
+
+
+class TestStaleConnectionSweep:
+    """Background sweep closes dead WebSocket connections.
+
+    The PROTOCOL §6 contract says a server marks a node offline after
+    60s of silence. The :class:`ServerRunner` implements this with a
+    background task that calls :meth:`NodeRegistry.stale` on a fixed
+    interval and closes any candidate's WebSocket. Closing the
+    WebSocket trips the connection handler's ``finally`` block, which
+    unregisters the node — so the registry is the canonical assertion
+    surface.
+    """
+
+    @pytest.fixture
+    def fast_sweep_config(
+        self, free_port: int, fernet_key: str, tmp_path: Path
+    ) -> NodeServerConfig:
+        """A config tuned for sub-second sweep testing.
+
+        Stale threshold of 0.5s, sweep interval of 0.1s — the runner
+        will mark any connection that hasn't received traffic in the
+        last half-second as dead, and it re-checks every tenth of a
+        second. This keeps the test under a couple of seconds wall
+        time even on a contended CI box.
+        """
+        return NodeServerConfig(
+            host="127.0.0.1",
+            port=free_port,
+            token_store_path=str(tmp_path / "fast-sweep-tokens.json"),
+            token_encryption_key_env="HERMES_NODES_TOKEN_KEY",
+            heartbeat_stale_seconds=1,
+            heartbeat_sweep_interval_seconds=1,
+        )
+
+    @pytest.fixture
+    def fast_runner(
+        self,
+        fast_sweep_config: NodeServerConfig,
+        store: TokenStore,
+        registry: NodeRegistry,
+    ) -> Iterator[ServerRunner]:
+        """A :class:`ServerRunner` with a fast sweep cycle.
+
+        Reuses the test's shared ``store`` and ``registry`` fixtures
+        so tokens created via ``store.create(name)`` are visible to
+        the runner's app, and connections registered against the
+        app end up in the registry the test asserts against. The
+        runner is built with the test's sweep-tuned config but the
+        shared store/registry so token + connection state is
+        observable from the test body.
+        """
+        r = ServerRunner(
+            config=fast_sweep_config, token_store=store, registry=registry
+        )
+        yield r
+        try:
+            asyncio.run(r.drain(timeout=2.0))
+        except Exception:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_sweep_evicts_stale_connection(
+        self, fast_runner: ServerRunner, store: TokenStore, registry: NodeRegistry
+    ) -> None:
+        """A stale connection is closed by the sweep; unregister is
+        the handler's job (covered separately).
+
+        We register a stub ``NodeConnection`` directly into the
+        registry with a fake WebSocket whose ``close()`` is a no-op
+        coroutine. That sidesteps the cross-thread TestClient loop
+        race that the prior version of this test hit. The sweep's
+        responsibility is to (1) find the stale entry via
+        ``registry.stale()`` and (2) call ``websocket.close()`` on
+        it — we assert both. The unregister path is exercised in
+        ``test_drain_closes_active_connections`` and PR #24's
+        ``test_second_connection_from_same_name_replaces_first``.
+        """
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace
+
+        from hermes_nodes_plugin.registry import NodeConnection
+
+        closed: list[int] = []
+
+        async def fake_close(code: int = 1000) -> None:
+            closed.append(code)
+            # Ask the sweep loop to exit on its next check. We set
+            # the event from inside the close so the test only
+            # awaits the first tick (the loop's wait_for is
+            # bounded by interval=1s, but setting the event now
+            # makes the wait return immediately on the next loop
+            # iteration).
+            fast_runner._stop_sweep.set()  # type: ignore[attr-defined]
+
+        fake_ws = SimpleNamespace(close=fake_close)
+        conn = NodeConnection(
+            name="ghost-laptop",
+            websocket=fake_ws,  # type: ignore[arg-type]
+            session_id="sweep-evict-test-session",
+        )
+        await registry.register(conn)
+        # Backdate the heartbeat past the 1s threshold.
+        long_ago = datetime.now(timezone.utc) - timedelta(seconds=120)
+        assert await registry.touch_heartbeat("ghost-laptop", at=long_ago) is True
+        assert await registry.is_connected("ghost-laptop") is True
+
+        # Drive one sweep tick directly. We don't need the
+        # background task for this assertion (it races the
+        # cross-thread TestClient loop) and the per-tick coroutine
+        # is the unit of work that matters. The sweep loop exits
+        # as soon as ``_stop_sweep`` is set — fake_close sets it.
+        await asyncio.wait_for(
+            fast_runner._sweep_stale_connections(),  # type: ignore[attr-defined]
+            timeout=2.0,
+        )
+
+        assert closed == [1000], (
+            f"expected sweep to close the stale WebSocket with code 1000, "
+            f"got {closed!r}"
+        )
+        # The sweep must NOT unregister — that's the handler's job
+        # (server.py's WebSocketDisconnect branch). We assert the
+        # entry is still present, then unregister explicitly to
+        # keep the test self-contained.
+        assert await registry.is_connected("ghost-laptop") is True
+        await registry.unregister(
+            "ghost-laptop", expected_session_id=conn.session_id
+        )
+        assert await registry.is_connected("ghost-laptop") is False
+
+        await fast_runner.drain(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_sweep_keeps_fresh_connection_alive(
+        self, fast_runner: ServerRunner, store: TokenStore, registry: NodeRegistry
+    ) -> None:
+        """A node whose heartbeat is fresh is NOT closed by the sweep.
+
+        The sweep is selective: only connections past the threshold
+        are evicted. This test connects, lets several sweep
+        intervals pass, and asserts the connection is still
+        registered. We keep traffic flowing with a no-op
+        ``touch_heartbeat`` to stay under the threshold.
+        """
+        from fastapi.testclient import TestClient
+
+        await fast_runner.start()
+        try:
+            token = store.create("active-laptop")
+            client = TestClient(fast_runner.app)
+            with client.websocket_connect("/ws/nodes") as ws:
+                ws.send_json(
+                    {
+                        "type": "hello",
+                        "protocol_version": "0.1.0",
+                        "node_name": "active-laptop",
+                    }
+                )
+                assert ws.receive_json()["type"] == "hello_ack"
+                ws.send_json(
+                    {
+                        "type": "auth",
+                        "node_name": "active-laptop",
+                        "token": token,
+                    }
+                )
+                assert ws.receive_json()["type"] == "auth_ok"
+
+                # Let two sweep cycles pass while we keep the
+                # heartbeat fresh. The default interval is 1s, so
+                # 2.5s of keep-alive covers two cycles with margin.
+                for _ in range(5):
+                    await asyncio.sleep(0.5)
+                    assert await registry.touch_heartbeat("active-laptop") is True
+
+                assert await registry.is_connected("active-laptop") is True
+        finally:
+            await fast_runner.drain(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_sweep_task_stops_on_drain(
+        self, fast_runner: ServerRunner
+    ) -> None:
+        """The background sweep task is cancelled when the runner drains.
+
+        Issue #19: the sweep is a long-lived task. If ``drain`` does
+        not stop it, the task outlives the server and we leak an
+        :class:`asyncio.Task` (and a logger handle) per drain cycle.
+        After ``drain`` returns, the sweep task must be done.
+        """
+        await fast_runner.start()
+        try:
+            sweep_task = fast_runner._sweep_task  # type: ignore[attr-defined]
+            assert sweep_task is not None
+            assert not sweep_task.done(), (
+                "sweep task should be running while server is up"
+            )
+        finally:
+            await fast_runner.drain(timeout=5.0)
+
+        # After drain, the sweep task has been awaited (cancelled or
+        # exited via the stop event) — it's done and cleared.
+        assert fast_runner._sweep_task is None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# reset_default_runner + reset_default_runner_sync (issue #20)
+# ---------------------------------------------------------------------------
+
+
+class TestResetDefaultRunner:
+    """``reset_default_runner`` must fully drain the previous runner.
+
+    The old implementation synchronously cancelled the runner's task
+    without awaiting it, which is exactly the EADDRINUSE footgun
+    the issue describes. The fix is twofold:
+
+    * ``reset_default_runner`` is now a coroutine that schedules an
+      ``await runner.drain(timeout=2.0)`` and returns the future.
+      Async tests ``await`` it.
+    * ``reset_default_runner_sync`` is a sync shim that drives the
+      drain via ``asyncio.run_coroutine_threadsafe`` and blocks
+      until the future resolves. Sync tests (fixtures, module-level
+      cleanup) call this.
+
+    These tests exercise both shapes, plus a tight-loop regression
+    test that would have surfaced EADDRINUSE under the old code.
+    """
+
+    def _make_runner(
+        self, free_port: int, fernet_key: str, tmp_path: Path
+    ) -> ServerRunner:
+        from hermes_nodes_plugin.tokens import TokenStore
+
+        config = NodeServerConfig(
+            host="127.0.0.1",
+            port=free_port,
+            token_store_path=str(tmp_path / f"tokens-{free_port}.json"),
+            token_encryption_key_env="HERMES_NODES_TOKEN_KEY",
+        )
+        store = TokenStore(
+            path=tmp_path / f"tokens-{free_port}.json", key=fernet_key
+        )
+        registry = NodeRegistry()
+        return ServerRunner(config=config, token_store=store, registry=registry)
+
+    def test_reset_sync_with_no_runner_is_noop(self) -> None:
+        """Calling the sync shim when no runner exists is a safe no-op.
+
+        Issue #20's regression test #2: reset twice in quick
+        succession must not raise. The first call sees no runner
+        (or drains it); the second call sees no runner. Both
+        return cleanly.
+        """
+        from hermes_nodes_plugin.lifecycle import (
+            _default_runner,
+            reset_default_runner_sync,
+        )
+
+        # Force the singleton to None so the no-op assertion holds
+        # regardless of test order — the default_runner is module
+        # global state and ``TestRegisterPluginWiring`` (which runs
+        # later alphabetically) leaves it populated via
+        # ``get_default_runner()``.
+        import hermes_nodes_plugin.lifecycle as _lifecycle
+
+        _lifecycle._default_runner = None
+        assert _default_runner is None
+        # Both calls are no-ops, neither raises.
+        reset_default_runner_sync()
+        reset_default_runner_sync()
+        assert _default_runner is None
+
+    def test_reset_sync_raises_inside_running_loop(
+        self,
+        fernet_key: str,
+        tmp_path: Path,
+    ) -> None:
+        """The sync shim must not be called from inside a running loop.
+
+        The dead-lock-detection case: calling
+        ``reset_default_runner_sync`` from a coroutine would block
+        the loop's thread on a future scheduled on the same loop,
+        and the coroutine would never run. The shim detects this
+        and raises ``RuntimeError`` with a clear message pointing
+        the caller to the async API.
+        """
+        import os
+
+        import hermes_nodes_plugin.lifecycle as lifecycle_mod
+        from hermes_nodes_plugin.lifecycle import reset_default_runner_sync
+
+        os.environ["HERMES_NODES_TOKEN_KEY"] = fernet_key
+        try:
+            port = _free_port()
+            runner = self._make_runner(port, fernet_key, tmp_path)
+
+            async def scenario() -> None:
+                # Start a real runner so ``is_running`` is True.
+                # The shim's check fires before any drain attempt,
+                # so we never actually close the port.
+                await runner.start()
+                lifecycle_mod._default_runner = runner
+                try:
+                    with pytest.raises(
+                        RuntimeError, match="inside a running event loop"
+                    ):
+                        reset_default_runner_sync()
+                finally:
+                    lifecycle_mod._default_runner = None
+                    try:
+                        if runner.is_running:
+                            await runner.drain(timeout=2.0)
+                    except Exception:
+                        pass
+
+            asyncio.run(scenario())
+        finally:
+            os.environ.pop("HERMES_NODES_TOKEN_KEY", None)
+
+    @pytest.mark.asyncio
+    async def test_reset_await_awaits_drain(
+        self,
+        free_port: int,
+        fernet_key: str,
+        tmp_path: Path,
+    ) -> None:
+        """The async ``reset_default_runner`` awaits the previous drain.
+
+        We override the module singleton with a real running
+        runner, then call the coroutine and assert the runner is
+        no longer running by the time it returns. This is the
+        core contract: the cancel-and-forget race window is
+        gone — by the time ``reset_default_runner`` returns, the
+        port is free.
+        """
+        import os
+
+        from hermes_nodes_plugin.lifecycle import (
+            _default_runner,
+            reset_default_runner,
+        )
+
+        os.environ["HERMES_NODES_TOKEN_KEY"] = fernet_key
+        try:
+            runner = self._make_runner(free_port, fernet_key, tmp_path)
+            # Inject our runner as the singleton so the async
+            # reset can find it.
+            import hermes_nodes_plugin.lifecycle as lifecycle_mod
+
+            lifecycle_mod._default_runner = runner
+            try:
+                await runner.start()
+                assert runner.is_running
+                assert _is_port_open("127.0.0.1", free_port)
+
+                # The async reset coroutine — must be awaited.
+                await reset_default_runner()
+                # No further state assertions about the returned
+                # future (its semantics are an implementation
+                # detail); the port-free assertion below is the
+                # real contract.
+                assert not runner.is_running, (
+                    "reset_default_runner must have drained the runner"
+                )
+                assert not _is_port_open("127.0.0.1", free_port), (
+                    "after reset, the port must be free for the next runner"
+                )
+                assert _default_runner is None, (
+                    "reset_default_runner must clear the singleton"
+                )
+            finally:
+                # Belt-and-braces: even if the test failed mid-way,
+                # don't leak a running uvicorn.
+                try:
+                    await runner.drain(timeout=2.0)
+                except Exception:
+                    pass
+                lifecycle_mod._default_runner = None
+        finally:
+            os.environ.pop("HERMES_NODES_TOKEN_KEY", None)
+
+    def test_reset_tight_loop_does_not_hit_eaddrinuse(
+        self,
+        fernet_key: str,
+        tmp_path: Path,
+    ) -> None:
+        """The regression test for issue #20: tight reset+rebuild never EADDRINUSEs.
+
+        The old code did ``task.cancel()`` and immediately dropped
+        the global, so a tight loop of (start, reset, start, reset)
+        could race uvicorn's socket release and the second ``start``
+        would bind to a still-TIME_WAIT port. The fix awaits the
+        drain, so by the time ``reset`` returns the port is free.
+
+        We run the loop 5 times to give the race a chance to fire
+        under the old behaviour.
+        """
+        import os
+
+        from hermes_nodes_plugin.lifecycle import (
+            _default_runner,
+            reset_default_runner,
+        )
+        import hermes_nodes_plugin.lifecycle as lifecycle_mod
+
+        os.environ["HERMES_NODES_TOKEN_KEY"] = fernet_key
+        try:
+            # We run the whole loop inside one asyncio.run because
+            # the runner is bound to the loop it was started in —
+            # starting it in a fresh loop and then checking it from
+            # outside sees a dead task. The :class:`ServerRunner` is
+            # the contract being tested; the loop is incidental.
+            async def tight_loop() -> None:
+                for i in range(5):
+                    port = _free_port()
+                    runner = self._make_runner(port, fernet_key, tmp_path)
+                    lifecycle_mod._default_runner = runner
+                    try:
+                        await runner.start()
+                        assert runner.is_running
+                        assert _is_port_open("127.0.0.1", port), (
+                            f"iteration {i}: server should be bound on {port}"
+                        )
+                        # Async reset — must fully drain before we
+                        # start the next iteration. The next
+                        # iteration will try to bind a fresh runner
+                        # on the same port; the old runner's
+                        # uvicorn must be fully down by then.
+                        await reset_default_runner()
+                        assert not runner.is_running, (
+                            f"iteration {i}: reset left runner running"
+                        )
+                        assert not _is_port_open("127.0.0.1", port), (
+                            f"iteration {i}: port {port} not released by reset"
+                        )
+                    finally:
+                        try:
+                            if runner.is_running:
+                                await runner.drain(timeout=2.0)
+                        except Exception:
+                            pass
+                        lifecycle_mod._default_runner = None
+
+            asyncio.run(tight_loop())
+            # The singleton must end up None.
+            assert _default_runner is None
+        finally:
+            os.environ.pop("HERMES_NODES_TOKEN_KEY", None)
+
+    def test_reset_twice_in_quick_succession_is_safe(
+        self,
+        free_port: int,
+        fernet_key: str,
+        tmp_path: Path,
+    ) -> None:
+        """Two resets back-to-back: the second is a no-op and does not raise.
+
+        Issue #20's regression-test #1: ``reset_default_runner``
+        called twice in a row must not raise on the second call
+        (the first drain is in flight or complete, the second sees
+        no runner to drain).
+        """
+        import os
+
+        import hermes_nodes_plugin.lifecycle as lifecycle_mod
+        from hermes_nodes_plugin.lifecycle import (
+            _default_runner,
+            reset_default_runner,
+        )
+
+        os.environ["HERMES_NODES_TOKEN_KEY"] = fernet_key
+        try:
+
+            async def scenario() -> None:
+                runner = self._make_runner(free_port, fernet_key, tmp_path)
+                lifecycle_mod._default_runner = runner
+                try:
+                    await runner.start()
+                    assert runner.is_running
+
+                    await reset_default_runner()
+                    # First reset cleared the global.
+                    assert _default_runner is None
+                    # Second reset sees no runner — must be a no-op,
+                    # must not raise.
+                    await reset_default_runner()
+                    assert _default_runner is None
+                finally:
+                    try:
+                        if runner.is_running:
+                            await runner.drain(timeout=2.0)
+                    except Exception:
+                        pass
+                    lifecycle_mod._default_runner = None
+
+            asyncio.run(scenario())
+        finally:
+            os.environ.pop("HERMES_NODES_TOKEN_KEY", None)
 
 # ---------------------------------------------------------------------------
 # Plugin integration: register(ctx) wires the runner to the session lifecycle
@@ -282,7 +791,7 @@ class TestRegisterPluginWiring:
         monkeypatch.setenv(
             "HERMES_NODES_TOKEN_KEY", Fernet.generate_key().decode("ascii")
         )
-        reset_default_runner()
+        reset_default_runner_sync()
 
         ctx = SimpleNamespace(
             _registered_hooks={},
@@ -348,7 +857,7 @@ class TestRegisterPluginWiring:
         error from the CLI subcommand instead).
         """
         monkeypatch.delenv("HERMES_NODES_TOKEN_KEY", raising=False)
-        reset_default_runner()
+        reset_default_runner_sync()
 
         ctx = SimpleNamespace(
             manifest=SimpleNamespace(

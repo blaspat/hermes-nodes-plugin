@@ -33,6 +33,16 @@ prefix and lowercased):
     structured ``hello_err`` / ``auth_err`` (reason
     ``handshake_timeout``) and closes with 4004. Issue #13.
 
+  * ``heartbeat_stale_seconds``   (int)   default ``60``
+    — a node whose last inbound message is older than this is
+    considered dead (PROTOCOL §6) and the runner's background
+    sweep will close its WebSocket. Override with
+    ``HERMES_NODES_HEARTBEAT_STALE_SECONDS``.
+  * ``heartbeat_sweep_interval_seconds`` (int)   default ``30``
+    — how often the runner's background sweep checks the
+    registry for stale connections. Must be ``> 0``. Override
+    with ``HERMES_NODES_HEARTBEAT_SWEEP_INTERVAL_SECONDS``.
+
 Type coercion rules (applied uniformly to env and file values):
 
   * ``port`` is parsed via :func:`int`. A non-integer value raises
@@ -66,11 +76,9 @@ DEFAULT_TOKEN_STORE_PATH = Path("~/.hermes/nodes/tokens.json").expanduser()
 # config keys uniformly to keep precedence rules easy to explain.
 _ENV_PREFIX = "HERMES_NODES_"
 
-
 # ---------------------------------------------------------------------------
 # Dataclass
 # ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class NodeServerConfig:
@@ -110,6 +118,16 @@ class NodeServerConfig:
     # on any plausible network. ``__post_init__`` enforces > 0.
     handshake_timeout_seconds: float = 10.0
 
+    # PROTOCOL §6: a node is considered dead after this many seconds
+    # without any inbound message. The runner's background sweep
+    # closes the WebSocket of any node whose ``last_heartbeat`` is
+    # older than this threshold. See issue #19.
+    heartbeat_stale_seconds: int = 60
+    # How often the runner's background sweep runs. Lower means
+    # faster cleanup of dead nodes; higher means less registry
+    # churn. Must be ``> 0``. See issue #19.
+    heartbeat_sweep_interval_seconds: int = 30
+
     def __post_init__(self) -> None:
         # TLS partial-config is the most common deployment footgun: an
         # operator sets tls_cert_path but forgets tls_key_path (or vice
@@ -130,6 +148,16 @@ class NodeServerConfig:
             raise ConfigError(
                 f"handshake_timeout_seconds must be > 0, got "
                 f"{self.handshake_timeout_seconds!r}"
+            )
+
+        if self.heartbeat_stale_seconds <= 0:
+            raise ConfigError(
+                f"heartbeat_stale_seconds must be > 0, got {self.heartbeat_stale_seconds!r}"
+            )
+        if self.heartbeat_sweep_interval_seconds <= 0:
+            raise ConfigError(
+                "heartbeat_sweep_interval_seconds must be > 0, "
+                f"got {self.heartbeat_sweep_interval_seconds!r}"
             )
 
     # -- predicates ---------------------------------------------------------
@@ -160,15 +188,12 @@ class NodeServerConfig:
         src = env if env is not None else os.environ
         return src.get(self.token_encryption_key_env) or None
 
-
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
 
-
 def _env_name(key: str) -> str:
     return f"{_ENV_PREFIX}{key.upper()}"
-
 
 def _coerce_port(value: Any, *, source: str, key: str) -> int:
     try:
@@ -179,7 +204,6 @@ def _coerce_port(value: Any, *, source: str, key: str) -> int:
         raise ConfigError(f"{source}: {key} must be in 1..65535, got {port}")
     return port
 
-
 def _coerce_optional_str(value: Any) -> str | None:
     """Treat ``None``, empty string, and YAML null as "unset"."""
     if value is None:
@@ -187,7 +211,6 @@ def _coerce_optional_str(value: Any) -> str | None:
     if isinstance(value, str) and value.strip() == "":
         return None
     return str(value)
-
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     """Read a YAML config file. Missing file → empty dict (caller falls back to defaults)."""
@@ -206,7 +229,6 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         )
     return data
 
-
 def _read_file_value(file_data: dict[str, Any], key: str) -> Any:
     """Look up a key in the YAML file, accepting both lower and upper case.
 
@@ -222,7 +244,6 @@ def _read_file_value(file_data: dict[str, Any], key: str) -> Any:
         return file_data[upper]
     return None
 
-
 def _resolve_str(
     *,
     key: str,
@@ -234,7 +255,6 @@ def _resolve_str(
     if env_name in env:
         return env[env_name]
     return _read_file_value(file_data, key)
-
 
 def _build(
     *,
@@ -335,6 +355,60 @@ def _build(
                 f"got {handshake_timeout}"
             )
 
+    # -- heartbeat stale seconds (int) -------------------------------------
+    # PROTOCOL §6: a node is dead after this many seconds without any
+    # inbound message. The runner's background sweep (issue #19) uses
+    # this to decide who's stale.
+    heartbeat_stale_raw: Any = None
+    heartbeat_stale_source = "default"
+    if env.get("HERMES_NODES_HEARTBEAT_STALE_SECONDS") is not None:
+        heartbeat_stale_raw = env["HERMES_NODES_HEARTBEAT_STALE_SECONDS"]
+        heartbeat_stale_source = "env"
+    elif _read_file_value(file_data, "heartbeat_stale_seconds") is not None:
+        heartbeat_stale_raw = _read_file_value(file_data, "heartbeat_stale_seconds")
+        heartbeat_stale_source = "file"
+    heartbeat_stale: int | None = None
+    if heartbeat_stale_raw is not None:
+        try:
+            heartbeat_stale = int(heartbeat_stale_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{heartbeat_stale_source}: heartbeat_stale_seconds must be an integer, "
+                f"got {heartbeat_stale_raw!r}"
+            ) from exc
+        if heartbeat_stale <= 0:
+            raise ConfigError(
+                f"{heartbeat_stale_source}: heartbeat_stale_seconds must be > 0, "
+                f"got {heartbeat_stale}"
+            )
+
+    # -- heartbeat sweep interval seconds (int) ----------------------------
+    # How often the background sweep runs. Decoupled from the stale
+    # threshold so operators can tune cleanup latency independently
+    # of the dead-node definition.
+    sweep_interval_raw: Any = None
+    sweep_interval_source = "default"
+    if env.get("HERMES_NODES_HEARTBEAT_SWEEP_INTERVAL_SECONDS") is not None:
+        sweep_interval_raw = env["HERMES_NODES_HEARTBEAT_SWEEP_INTERVAL_SECONDS"]
+        sweep_interval_source = "env"
+    elif _read_file_value(file_data, "heartbeat_sweep_interval_seconds") is not None:
+        sweep_interval_raw = _read_file_value(file_data, "heartbeat_sweep_interval_seconds")
+        sweep_interval_source = "file"
+    sweep_interval: int | None = None
+    if sweep_interval_raw is not None:
+        try:
+            sweep_interval = int(sweep_interval_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{sweep_interval_source}: heartbeat_sweep_interval_seconds must be an integer, "
+                f"got {sweep_interval_raw!r}"
+            ) from exc
+        if sweep_interval <= 0:
+            raise ConfigError(
+                f"{sweep_interval_source}: heartbeat_sweep_interval_seconds must be > 0, "
+                f"got {sweep_interval}"
+            )
+
     # Now assemble. We use a partial dict + NodeServerConfig defaults for
     # any key we didn't resolve — dataclass handles the "default" leg of
     # the precedence chain.
@@ -358,8 +432,12 @@ def _build(
     if handshake_timeout is not None:
         resolved["handshake_timeout_seconds"] = handshake_timeout
 
-    return NodeServerConfig(**resolved)
+    if heartbeat_stale is not None:
+        resolved["heartbeat_stale_seconds"] = heartbeat_stale
+    if sweep_interval is not None:
+        resolved["heartbeat_sweep_interval_seconds"] = sweep_interval
 
+    return NodeServerConfig(**resolved)
 
 def load_config(
     *,
@@ -393,11 +471,9 @@ def load_config(
     file_data = _load_yaml(path)
     return _build(env=env, file_data=file_data)
 
-
 # ---------------------------------------------------------------------------
 # Convenience re-exports
 # ---------------------------------------------------------------------------
-
 
 __all__ = [
     "NodeServerConfig",

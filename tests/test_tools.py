@@ -163,8 +163,8 @@ class TestRegisterRegistersAllFourTools:
         monkeypatch.setenv(
             "HERMES_NODES_TOKEN_KEY", Fernet.generate_key().decode("ascii")
         )
-        from hermes_nodes_plugin.lifecycle import reset_default_runner
-        reset_default_runner()
+        from hermes_nodes_plugin.lifecycle import reset_default_runner_sync
+        reset_default_runner_sync()
 
         ctx = SimpleNamespace(
             _registered_hooks={},
