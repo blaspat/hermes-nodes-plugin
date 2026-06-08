@@ -360,11 +360,27 @@ class TokenStore:
 
         # Successful auth → update last_used_at. Best-effort; ignore
         # write errors so a disk hiccup doesn't lock the node out.
+        # We catch ``Exception`` (not just ``TokenStoreError``) because
+        # :meth:`_write_all` can raise low-level :class:`OSError` from
+        # ``os.replace`` / ``os.fdopen`` / ``tempfile.mkstemp`` / the
+        # ``mkdir`` call on a read-only directory, plus a ``TypeError``
+        # if the parent path can't be coerced to ``str``. The docstring
+        # above ("if the write fails ... the validation result is still
+        # True") promises best-effort semantics, so we honour the
+        # contract by swallowing *all* write-time errors and returning
+        # ``True`` — the auth already succeeded. The previous narrower
+        # ``except TokenStoreError`` was dead code: nothing in the
+        # current write path raises it.
         now = _now_iso()
         match.last_used_at = now
         try:
             self._write_all(records)
-        except TokenStoreError:
+        except Exception:
+            # Intentionally broad: a transient disk/permission failure
+            # must not convert a successful auth into a server crash.
+            # The auth result is the source of truth; the audit update
+            # is a nice-to-have and will be retried on the next
+            # successful validate.
             pass
         return True
 

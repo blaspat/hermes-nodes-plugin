@@ -441,6 +441,95 @@ def test_token_store_from_config_clear_error_includes_recovery(
 
 
 # ---------------------------------------------------------------------------
+# Best-effort last_used_at write (issue #12)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_does_not_leak_oserror_on_write_failure(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #12: ``validate()`` must not let an ``OSError`` from the
+    best-effort ``last_used_at`` write escape.
+
+    Before the fix, the ``try/except TokenStoreError`` was dead code:
+    ``_write_all`` raises ``OSError`` (from ``os.replace`` /
+    ``os.fdopen`` / ``tempfile.mkstemp``), not ``TokenStoreError``. A
+    successful auth followed by a write failure (disk full, read-only
+    directory, permissions) propagated the ``OSError`` out of
+    ``validate()`` to the WebSocket handler in ``server.py``, which
+    could close the socket with 1011. The docstring promised the
+    opposite: "if the write fails (disk full, permissions), the
+    validation result is still True."
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+    token = store.create("laptop1")
+    # Sanity: round-trip works on a writable path.
+    assert store.validate("laptop1", token) is True
+
+    # Simulate a write failure on the post-auth audit update. We patch
+    # ``os.replace`` (the only function inside ``_write_all`` whose
+    # failure would surface on a normal path) to raise OSError, which
+    # is what the underlying filesystem would do on ENOSPC / EROFS /
+    # EACCES.
+    def boom_replace(src: str, dst: str, *a: object, **kw: object) -> None:
+        raise OSError(28, "No space left on device (simulated)")
+
+    monkeypatch.setattr("os.replace", boom_replace)
+    # Must still return True — the auth succeeded; the audit update
+    # is best-effort per the docstring contract.
+    assert store.validate("laptop1", token) is True
+
+
+def test_validate_does_not_leak_typeerror_on_write_failure(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Smoke test for the broader ``except Exception`` boundary: even a
+    non-OSError exception (here ``TypeError``) from the write path
+    must not leak. This is the "we catch ALL write-time errors, not
+    just the ones we know about" promise of the fix.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+    token = store.create("laptop1")
+
+    def boom_replace(src: str, dst: str, *a: object, **kw: object) -> None:
+        raise TypeError("simulated type error in write path")
+
+    monkeypatch.setattr("os.replace", boom_replace)
+    assert store.validate("laptop1", token) is True
+
+
+def test_validate_write_failure_does_not_corrupt_existing_store(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write failure during a best-effort ``last_used_at`` update
+    must not corrupt the on-disk store. The original valid record
+    must still validate on the next call (after the patched-out
+    failure is removed) and must still round-trip across instances.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+    token = store.create("laptop1")
+
+    def boom_replace(src: str, dst: str, *a: object, **kw: object) -> None:
+        raise OSError(28, "No space left on device (simulated)")
+
+    monkeypatch.setattr("os.replace", boom_replace)
+    # Auth still succeeds under failure.
+    assert store.validate("laptop1", token) is True
+    # Restore the real os.replace — subsequent writes work again.
+    monkeypatch.undo()
+
+    # A second instance can read the file (i.e. the original record is
+    # intact; the failed write left the previous good file in place
+    # because atomic rename only happens at the end of _write_all).
+    s2 = TokenStore(path=p, key=key)
+    assert [r.name for r in s2.list()] == ["laptop1"]
+    assert s2.validate("laptop1", token) is True
+
+
+# ---------------------------------------------------------------------------
 # Constant-time compare (REQUIREMENTS NFR-1.1)
 # ---------------------------------------------------------------------------
 
