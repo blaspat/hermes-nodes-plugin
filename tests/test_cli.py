@@ -34,6 +34,7 @@ What is NOT tested here (covered elsewhere):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
@@ -462,6 +463,119 @@ class TestCloseActiveConnection:
         cli_mod._close_active_connection("anything")
         _, err = capsys.readouterr()
         assert err == ""
+
+
+# ---------------------------------------------------------------------------
+# The strict connection-close helper (--strict mode in `hermes node revoke`)
+# ---------------------------------------------------------------------------
+
+
+class TestCloseActiveConnectionStrict:
+    """Cover the four result codes the strict helper can return.
+
+    The strict helper must distinguish:
+
+    * ``closed`` — clean ACK within the timeout
+    * ``no_connection`` — nothing to wait for (exit 0 in caller)
+    * ``timed_out`` — close did not ACK in time (exit 1 in caller)
+    * ``error`` — runner/registry/loop is unavailable (exit 1 in caller)
+
+    These are unit-level: we mock the registry's ``get`` and the
+    websocket's ``close()`` coroutine so the helper sees a synthetic
+    outcome without standing up a real uvicorn.
+    """
+
+    def test_returns_closed_on_clean_ack(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_nodes_plugin.lifecycle as lc
+
+        class _FakeConn:
+            class websocket:
+                @staticmethod
+                async def close():
+                    return None
+
+        class _FakeRegistry:
+            @staticmethod
+            async def get(name: str):
+                return _FakeConn()
+
+        class _FakeRunner:
+            _registry = _FakeRegistry()
+
+        monkeypatch.setattr(lc, "get_default_runner", lambda: _FakeRunner())
+        result = cli_mod._close_active_connection_strict("laptop1", timeout=1.0)
+        assert result == cli_mod.CLOSE_RESULT_CLOSED
+
+    def test_returns_no_connection_when_registry_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_nodes_plugin.lifecycle as lc
+
+        class _FakeRegistry:
+            @staticmethod
+            async def get(name: str):
+                return None
+
+        class _FakeRunner:
+            _registry = _FakeRegistry()
+
+        monkeypatch.setattr(lc, "get_default_runner", lambda: _FakeRunner())
+        result = cli_mod._close_active_connection_strict("ghost", timeout=1.0)
+        assert result == cli_mod.CLOSE_RESULT_NO_CONNECTION
+
+    def test_returns_timed_out_when_close_hangs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_nodes_plugin.lifecycle as lc
+
+        class _FakeConn:
+            class websocket:
+                @staticmethod
+                async def close():
+                    await asyncio.sleep(60)  # never returns
+
+        class _FakeRegistry:
+            @staticmethod
+            async def get(name: str):
+                return _FakeConn()
+
+        class _FakeRunner:
+            _registry = _FakeRegistry()
+
+        monkeypatch.setattr(lc, "get_default_runner", lambda: _FakeRunner())
+        # Tiny timeout so the test runs fast. 0.05s is below the
+        # helper's asyncio.wait_for window but well above the
+        # scheduler granularity.
+        result = cli_mod._close_active_connection_strict("laptop1", timeout=0.05)
+        assert result == cli_mod.CLOSE_RESULT_TIMED_OUT
+
+    def test_returns_error_when_runner_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_nodes_plugin.lifecycle as lc
+
+        def _explode():
+            raise TokenStoreError("no runner")
+
+        monkeypatch.setattr(lc, "get_default_runner", _explode)
+        result = cli_mod._close_active_connection_strict("laptop1", timeout=1.0)
+        assert result == cli_mod.CLOSE_RESULT_ERROR
+
+    def test_returns_error_when_runner_has_no_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_nodes_plugin.lifecycle as lc
+
+        class _FakeRunnerNoRegistry:
+            pass  # no _registry attribute
+
+        monkeypatch.setattr(
+            lc, "get_default_runner", lambda: _FakeRunnerNoRegistry()
+        )
+        result = cli_mod._close_active_connection_strict("laptop1", timeout=1.0)
+        assert result == cli_mod.CLOSE_RESULT_ERROR
 
 
 # ---------------------------------------------------------------------------
