@@ -25,6 +25,13 @@ prefix and lowercased):
     — how long rotated audit files are kept before being purged
     (FR-5.4). The audit module also accepts
     ``HERMES_NODES_AUDIT_RETENTION_DAYS`` as a direct override.
+  * ``handshake_timeout_seconds`` (float) default ``10.0``
+    — max time the server waits for the ``hello`` and ``auth``
+    messages on the inbound handshake. A parked WSS is a trivial
+    DoS (one coroutine + FD per open socket); bounding the wait
+    caps the resource cost. On timeout the server sends a
+    structured ``hello_err`` / ``auth_err`` (reason
+    ``handshake_timeout``) and closes with 4004. Issue #13.
 
 Type coercion rules (applied uniformly to env and file values):
 
@@ -96,6 +103,12 @@ class NodeServerConfig:
     # the source of truth (kept as a literal here to break the
     # ``audit`` ↔ ``config`` import cycle).
     audit_retention_days: int = 365
+    # Handshake read timeout (issue #13). A single bound for both
+    # the hello and the auth recv — they are two phases of the same
+    # handshake, and splitting them invites an operator to set one
+    # tight and the other lax. 10s is generous for a small envelope
+    # on any plausible network. ``__post_init__`` enforces > 0.
+    handshake_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         # TLS partial-config is the most common deployment footgun: an
@@ -112,6 +125,11 @@ class NodeServerConfig:
         if self.audit_retention_days <= 0:
             raise ConfigError(
                 f"audit_retention_days must be > 0, got {self.audit_retention_days!r}"
+            )
+        if self.handshake_timeout_seconds <= 0:
+            raise ConfigError(
+                f"handshake_timeout_seconds must be > 0, got "
+                f"{self.handshake_timeout_seconds!r}"
             )
 
     # -- predicates ---------------------------------------------------------
@@ -291,6 +309,32 @@ def _build(
                 f"got {audit_retention}"
             )
 
+    # -- handshake timeout (float) -----------------------------------------
+    # Issue #13. Bounded waits on the hello + auth recv, applied
+    # uniformly through the standard env > file > default chain.
+    handshake_timeout_raw: Any = None
+    handshake_timeout_source = "default"
+    if env.get(_env_name("handshake_timeout_seconds")) is not None:
+        handshake_timeout_raw = env[_env_name("handshake_timeout_seconds")]
+        handshake_timeout_source = "env"
+    elif _read_file_value(file_data, "handshake_timeout_seconds") is not None:
+        handshake_timeout_raw = _read_file_value(file_data, "handshake_timeout_seconds")
+        handshake_timeout_source = "file"
+    handshake_timeout: float | None = None
+    if handshake_timeout_raw is not None:
+        try:
+            handshake_timeout = float(handshake_timeout_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{handshake_timeout_source}: handshake_timeout_seconds must be a number, "
+                f"got {handshake_timeout_raw!r}"
+            ) from exc
+        if handshake_timeout <= 0:
+            raise ConfigError(
+                f"{handshake_timeout_source}: handshake_timeout_seconds must be > 0, "
+                f"got {handshake_timeout}"
+            )
+
     # Now assemble. We use a partial dict + NodeServerConfig defaults for
     # any key we didn't resolve — dataclass handles the "default" leg of
     # the precedence chain.
@@ -311,6 +355,8 @@ def _build(
         resolved["audit_log_path"] = str(audit_log_raw)
     if audit_retention is not None:
         resolved["audit_retention_days"] = audit_retention
+    if handshake_timeout is not None:
+        resolved["handshake_timeout_seconds"] = handshake_timeout
 
     return NodeServerConfig(**resolved)
 

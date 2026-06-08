@@ -54,13 +54,14 @@ WebSocket close codes are taken from PROTOCOL §4 verbatim.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from hermes_nodes_plugin.config import NodeServerConfig
 from hermes_nodes_plugin.errors import TokenStoreError
@@ -73,6 +74,31 @@ logger = logging.getLogger(__name__)
 CLOSE_AUTH_FAILED = 4001
 CLOSE_PROTOCOL_VERSION = 4002
 CLOSE_MESSAGE_OUT_OF_ORDER = 4003
+# 4004 is "Rate limit exceeded" in PROTOCOL §4. We reuse it for the
+# handshake-timeout close (issue #13): a client that opens the WSS
+# and parks the connection is effectively exhausting server
+# resources, which is what the rate-limit code is for.
+CLOSE_HANDSHAKE_TIMEOUT = 4004
+
+# Field caps for Pydantic models (issue #14, DoS hardening).
+# ``node_name`` and ``token`` are the spec-mandated 64-char caps. The
+# 64-char bound is well above any legitimate value: tokens are 32
+# bytes url-safe-base64 = 43 chars; node names like "work-laptop" are
+# <20. The cap stops a 1MB-allocated-at-validation DoS payload.
+MAX_NODE_NAME_LEN = 64
+MAX_TOKEN_LEN = 64
+# ``protocol_version`` is a semver string; 32 chars is generous
+# (e.g. "0.1.0-rc.1+build.1234" is 21). ``node_version`` and the
+# free-form hint fields share the same cap so the model rejects
+# oversize payloads uniformly.
+MAX_PROTOCOL_VERSION_LEN = 32
+MAX_NODE_VERSION_LEN = 32
+MAX_PLATFORM_LEN = 32
+MAX_ARCH_LEN = 32
+# ``capabilities`` is a list; cap the per-item length and the count
+# so a 1MB-string-in-a-list payload still fails validation cheaply.
+MAX_CAPABILITIES = 16
+MAX_CAPABILITY_LEN = 32
 
 # Protocol version. We accept any minor at the same major, per
 # PROTOCOL §5. The server's own "max major" is a hard cutoff.
@@ -87,28 +113,74 @@ PROTOCOL_MAJOR = 0
 class _HelloMessage(BaseModel):
     """``hello`` from the node (PROTOCOL §3.1).
 
-    We only validate the fields we *act on* — ``protocol_version`` and
-    ``node_name``. Other fields (``node_version``, ``platform``,
-    ``arch``, ``capabilities``) are protocol-level hints that the
-    server passes through to the registry once Task 2.5 lands; for
-    now they're accepted-and-ignored to keep the handshake permissive.
+    Field caps (issue #14, DoS hardening): every string field has a
+    ``max_length`` so a 1MB payload fails Pydantic validation
+    *before* the server allocates the full string. ``extra="forbid"``
+    rejects unknown fields with a 4xx-shaped error instead of a 500
+    (a malformed message should not crash the handler).
+
+    Optional fields (``node_version``, ``platform``, ``arch``,
+    ``capabilities``) are documented in PROTOCOL §3.1 as hints and
+    are modelled explicitly here — that way ``extra="forbid"`` only
+    catches *truly* unknown fields, not the documented ones.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     type: str = Field(pattern=r"^hello$")
-    protocol_version: str
-    node_name: str
+    protocol_version: str = Field(max_length=MAX_PROTOCOL_VERSION_LEN)
+    node_name: str = Field(max_length=MAX_NODE_NAME_LEN)
+    # Optional hints per PROTOCOL §3.1.
+    node_version: str | None = Field(default=None, max_length=MAX_NODE_VERSION_LEN)
+    platform: str | None = Field(default=None, max_length=MAX_PLATFORM_LEN)
+    arch: str | None = Field(default=None, max_length=MAX_ARCH_LEN)
+    capabilities: list[str] | None = None
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _cap_capabilities(cls, value: Any) -> Any:
+        """Bound the ``capabilities`` list to a sane size.
+
+        Pydantic's per-item ``max_length`` only applies to scalar
+        fields; a list of strings with each item < ``MAX_CAPABILITY_LEN``
+        could still be a million-item list. We cap the count here
+        and the per-item length with a small loop (fast — the list
+        is short by design).
+        """
+        if value is None or not isinstance(value, list):
+            return value
+        if len(value) > MAX_CAPABILITIES:
+            raise ValueError(
+                f"capabilities must be a list of at most {MAX_CAPABILITIES} items, "
+                f"got {len(value)}"
+            )
+        for i, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"capabilities[{i}] must be a string, got {type(item).__name__}"
+                )
+            if len(item) > MAX_CAPABILITY_LEN:
+                raise ValueError(
+                    f"capabilities[{i}] exceeds max length {MAX_CAPABILITY_LEN}"
+                )
+        return value
 
 
 class _AuthMessage(BaseModel):
-    """``auth`` from the node (PROTOCOL §3.4)."""
+    """``auth`` from the node (PROTOCOL §3.4).
 
-    model_config = ConfigDict(extra="allow")
+    Field caps (issue #14): ``node_name`` and ``token`` capped at 64
+    chars; ``extra="forbid"`` rejects any other fields. The token
+    cap is the headline — a 1MB token would otherwise be allocated
+    by Pydantic to validate it, the DoS surface called out in the
+    issue body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     type: str = Field(pattern=r"^auth$")
-    node_name: str
-    token: str
+    node_name: str = Field(max_length=MAX_NODE_NAME_LEN)
+    token: str = Field(max_length=MAX_TOKEN_LEN)
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +285,35 @@ def create_app(
         remote_addr = client[0] if client else ""
 
         # -- 1. hello ----------------------------------------------------
+        # Issue #13: bound the wait for ``hello`` so a misbehaving
+        # client cannot park the connection forever. A parked
+        # connection is a trivial DoS — every open WSS holds a
+        # coroutine + FD. 10s is generous for a small envelope on
+        # any plausible network. On timeout we send a structured
+        # ``hello_err`` (reason ``handshake_timeout``) and close
+        # with 4004, the PROTOCOL §4 code reserved for resource-
+        # exhaustion-style rejections ("Rate limit exceeded").
         try:
-            raw = await websocket.receive_json()
+            raw = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=config.handshake_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "WSS hello timeout (%.1fs) from %r; closing 4004",
+                config.handshake_timeout_seconds,
+                remote_addr,
+            )
+            await _send_json_safe(
+                websocket,
+                _build_hello_err(
+                    reason="handshake_timeout",
+                    code=CLOSE_HANDSHAKE_TIMEOUT,
+                    server_max_version=_server_max_version(),
+                ),
+            )
+            await _safe_close(websocket, CLOSE_HANDSHAKE_TIMEOUT)
+            return
         except Exception:
             # Non-JSON or no message → protocol violation. Close with
             # 4003 ("Message out of order") — the node sent nothing
@@ -263,8 +362,30 @@ def create_app(
         )
 
         # -- 2. auth -----------------------------------------------------
+        # Same bounded-wait pattern for the auth recv (issue #13).
+        # The hello succeeded, so we know the node's name — useful
+        # for the timeout log line.
         try:
-            raw = await websocket.receive_json()
+            raw = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=config.handshake_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "WSS auth timeout (%.1fs) from %r (node_name=%r); closing 4004",
+                config.handshake_timeout_seconds,
+                remote_addr,
+                hello.node_name,
+            )
+            await _send_json_safe(
+                websocket,
+                _build_auth_err(
+                    reason="handshake_timeout",
+                    code=CLOSE_HANDSHAKE_TIMEOUT,
+                ),
+            )
+            await _safe_close(websocket, CLOSE_HANDSHAKE_TIMEOUT)
+            return
         except Exception:
             await _safe_close(websocket, CLOSE_MESSAGE_OUT_OF_ORDER)
             return

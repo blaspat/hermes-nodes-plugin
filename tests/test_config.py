@@ -520,3 +520,51 @@ def test_real_load_config_uses_environ_when_no_override(
     cfg = load_config(config_path=tmp_path / "nope.yaml")
     assert cfg.host == "from-prod-call"
     assert cfg.port == 6969  # default
+
+
+# ---------------------------------------------------------------------------
+# Issue #13 — handshake timeout config
+# ---------------------------------------------------------------------------
+
+
+def test_handshake_timeout_default_is_10_seconds() -> None:
+    """Default ``handshake_timeout_seconds`` is 10s (issue #13).
+
+    The issue body explicitly suggests 10s as the bound; we bake
+    that in as the dataclass default so an operator who doesn't
+    configure it gets the suggested value out of the box.
+    """
+    cfg = NodeServerConfig()
+    assert cfg.handshake_timeout_seconds == 10.0
+
+
+def test_handshake_timeout_zero_raises() -> None:
+    """Zero or negative ``handshake_timeout_seconds`` is rejected at load time.
+
+    A zero timeout would make the server unreachable; a negative
+    one would mean "fire in the past". Both are misconfigurations
+    the operator should see as a clean ``ConfigError`` rather than
+    a confusing ``asyncio.TimeoutError`` at the first handshake.
+    """
+    with pytest.raises(ConfigError, match="handshake_timeout_seconds must be > 0"):
+        NodeServerConfig(handshake_timeout_seconds=0)
+    with pytest.raises(ConfigError, match="handshake_timeout_seconds must be > 0"):
+        NodeServerConfig(handshake_timeout_seconds=-1.0)
+
+
+def test_handshake_timeout_from_env(
+    empty_env: dict[str, str], tmp_path: Path
+) -> None:
+    """``HERMES_NODES_HANDSHAKE_TIMEOUT_SECONDS`` env var is honoured."""
+    env = {**empty_env, "HERMES_NODES_HANDSHAKE_TIMEOUT_SECONDS": "2.5"}
+    cfg = load_config(env=env, config_path=tmp_path / "nope.yaml")
+    assert cfg.handshake_timeout_seconds == 2.5
+
+
+def test_handshake_timeout_env_must_be_number(
+    empty_env: dict[str, str], tmp_path: Path
+) -> None:
+    """A non-numeric value is rejected with a clear error."""
+    env = {**empty_env, "HERMES_NODES_HANDSHAKE_TIMEOUT_SECONDS": "soon"}
+    with pytest.raises(ConfigError, match="handshake_timeout_seconds must be a number"):
+        load_config(env=env, config_path=tmp_path / "nope.yaml")
