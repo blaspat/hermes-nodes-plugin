@@ -28,6 +28,7 @@ Coverage areas (matching REQUIREMENTS FR-1 + NFR-1.1/NFR-1.2):
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -527,6 +528,166 @@ def test_validate_write_failure_does_not_corrupt_existing_store(
     s2 = TokenStore(path=p, key=key)
     assert [r.name for r in s2.list()] == ["laptop1"]
     assert s2.validate("laptop1", token) is True
+
+
+# ---------------------------------------------------------------------------
+# Power-loss durability (issue #16)
+# ---------------------------------------------------------------------------
+
+
+def test_write_all_fsyncs_temp_file_then_parent_dir(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #16: ``_write_all`` must ``fsync`` the temp file *before*
+    the rename and the parent directory *after* the rename. Without
+    these, a power loss between the rename and the next page-cache
+    flush can leave the new file empty/stale or the directory still
+    pointing at the old inode.
+
+    We record every ``os.fsync`` call (the actual fd is opaque) plus
+    the ``os.replace`` call, then assert the ordering:
+
+        fsync(temp_fd)  →  os.replace(tmp, target)  →  fsync(parent_dir_fd)
+
+    The parent-dir fsync is the one issue #16 says is missing
+    entirely — a regression that drops it would fail here.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def recording_fsync(fd: int) -> None:
+        events.append(f"fsync({fd})")
+        real_fsync(fd)
+
+    def recording_replace(src: str, dst: str, *a: object, **kw: object) -> None:
+        events.append(f"replace({Path(src).name}->{Path(dst).name})")
+        real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr("os.fsync", recording_fsync)
+    monkeypatch.setattr("os.replace", recording_replace)
+
+    store.create("laptop1")
+
+    # We expect at least two fsyncs per write: one for the temp file,
+    # one for the parent directory. We can't peek at the fds directly,
+    # but we can assert the order of events and that the replace sits
+    # between two fsyncs.
+    fsync_indices = [i for i, e in enumerate(events) if e.startswith("fsync(")]
+    replace_indices = [
+        i for i, e in enumerate(events) if e.startswith("replace(")
+    ]
+    assert replace_indices, "os.replace was never called"
+    assert len(fsync_indices) >= 2, (
+        f"expected at least 2 fsync calls (temp file + parent dir), "
+        f"got {len(fsync_indices)}: {events!r}"
+    )
+    # The replace must happen *after* the first fsync (the temp file's)
+    # and *before* the last fsync (the parent dir's).
+    first_fsync = fsync_indices[0]
+    last_fsync = fsync_indices[-1]
+    replace_at = replace_indices[0]
+    assert first_fsync < replace_at < last_fsync, (
+        f"expected fsync(temp) -> replace -> fsync(parent) ordering, "
+        f"got events: {events!r}"
+    )
+
+
+def test_write_all_rename_failure_leaves_no_half_written_state(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #16: if ``os.replace`` raises mid-write, the on-disk
+    store must be unchanged (atomic rename semantics) and the
+    temp file must be cleaned up so the directory doesn't accumulate
+    ``.tokens.*.tmp`` debris.
+
+    This restates the "no half-written state" invariant from
+    issue #12 against the fsync-aware code path. It exercises the
+    ``except Exception`` branch that wraps both the file write *and*
+    the parent-dir fsync.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+    store.create("laptop1")
+
+    def boom_replace(src: str, dst: str, *a: object, **kw: object) -> None:
+        raise OSError(28, "No space left on device (simulated)")
+
+    monkeypatch.setattr("os.replace", boom_replace)
+
+    # A write that fails mid-way must propagate (validate's
+    # best-effort path will catch it; create/revoke must NOT).
+    with pytest.raises(OSError):
+        store.create("laptop2")
+
+    # No .tmp debris in the directory — the except branch cleaned up.
+    debris = list(tmp_path.glob(".tokens.*.tmp"))
+    assert debris == [], f"temp file cleanup failed: {debris!r}"
+
+    # The original record is still intact.
+    s2 = TokenStore(path=p, key=key)
+    assert [r.name for r in s2.list()] == ["laptop1"]
+
+
+def test_write_all_swallows_fsync_oserror(
+    tmp_path: Path, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #16: ``os.fsync`` raising ``OSError`` (e.g. on FUSE or
+    ``/dev/null``) must not crash the write path. The write either
+    succeeded (in which case we accept the durability loss) or it
+    raised for some other reason, and a transient fsync failure
+    is not a reason to convert a successful write into a crash.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+
+    def boom_fsync(fd: int) -> None:
+        raise OSError(22, "Invalid argument (simulated FUSE)")
+
+    monkeypatch.setattr("os.fsync", boom_fsync)
+
+    # The create must still succeed — fsync failure is best-effort.
+    token = store.create("laptop1")
+    # And a second store can read the new record.
+    s2 = TokenStore(path=p, key=key)
+    assert [r.name for r in s2.list()] == ["laptop1"]
+    assert s2.validate("laptop1", token) is True
+
+
+def test_write_all_round_trip_after_fsync_changes(
+    tmp_path: Path, key: str
+) -> None:
+    """End-to-end smoke for issue #16: with the fsync recipe in
+    place, a normal create → revoke → create-new flow on a real
+    on-disk store still round-trips. This is the "we didn't break
+    the happy path while adding durability" guard.
+
+    ``list()`` returns every record (revoked and active) in creation
+    order, so after the revoke-then-recreate sequence the store
+    holds two records with the same name. We assert:
+      * the second store can read both records (no corruption),
+      * the new token validates,
+      * the old (revoked) token does not.
+    """
+    p = tmp_path / "tokens.json"
+    store = TokenStore(path=p, key=key)
+
+    token_a = store.create("laptop1")
+    store.revoke("laptop1")
+    assert store.validate("laptop1", token_a) is False
+
+    token_b = store.create("laptop1")
+    assert store.validate("laptop1", token_b) is True
+
+    # Across instances: a fresh TokenStore reads the latest on-disk
+    # state, including the post-fsync durability.
+    s2 = TokenStore(path=p, key=key)
+    assert [r.name for r in s2.list()] == ["laptop1", "laptop1"]
+    assert s2.validate("laptop1", token_b) is True
+    assert s2.validate("laptop1", token_a) is False
 
 
 # ---------------------------------------------------------------------------

@@ -429,7 +429,29 @@ class TokenStore:
         return [_StoredRecord.from_dict(r) for r in raw_records]
 
     def _write_all(self, records: list[_StoredRecord]) -> None:
-        """Encrypt and write the full record list (atomic via temp+rename)."""
+        """Encrypt and write the full record list (atomic via temp+rename).
+
+        Crash-safety recipe (issue #16):
+
+        1. Write the ciphertext to a temp file in the same directory.
+        2. ``fsync`` the temp file so its data is on disk before the
+           rename. Without this, a power loss between the rename and
+           the next page-cache flush can leave the new file's inode
+           pointing at zero bytes or stale data.
+        3. ``os.replace`` the temp file onto the target. Same-directory
+           rename is atomic on POSIX and Windows (since Python 3.3).
+        4. ``fsync`` the parent directory so the directory entry
+           update (the rename) is durable too. Without this, a crash
+           can leave the directory pointing at the *old* inode even
+           though ``os.replace`` returned successfully.
+
+        Both ``fsync`` calls are wrapped in
+        :func:`contextlib.suppress` because some filesystems (FUSE,
+        ``/dev/null``, network mounts) raise ``OSError`` on fsync; we
+        do not want a transient fsync failure to convert a successful
+        write into a crash — the underlying write either succeeded or
+        raised, and the fsync is a durability best-effort.
+        """
         payload = {"version": 1, "records": [r.to_dict() for r in records]}
         plaintext = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         ciphertext = self._fernet.encrypt(plaintext)
@@ -444,7 +466,24 @@ class TokenStore:
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(ciphertext)
+                f.flush()
+                # Durability: make sure the temp file's data is on
+                # disk before we rename. If the rename succeeds and
+                # the kernel crashes before flushing, the new file
+                # could exist with zero/garbage bytes.
+                with contextlib.suppress(OSError):
+                    os.fsync(f.fileno())
             os.replace(tmp_path, self.path)
+            # Durability: make sure the directory entry update from
+            # the rename is on disk. Without this, a power loss can
+            # leave the directory pointing at the *old* inode even
+            # though ``os.replace`` already returned.
+            dir_fd = os.open(str(self.path.parent), os.O_RDONLY)
+            try:
+                with contextlib.suppress(OSError):
+                    os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
         except Exception:
             # Best-effort cleanup of the temp file on failure.
             with contextlib.suppress(OSError):
