@@ -129,12 +129,34 @@ class _HelloMessage(BaseModel):
 
     type: str = Field(pattern=r"^hello$")
     protocol_version: str = Field(max_length=MAX_PROTOCOL_VERSION_LEN)
-    node_name: str = Field(max_length=MAX_NODE_NAME_LEN)
+    # node_name must be non-empty after strip() per PROTOCOL §3.1
+    # (issue #21: the server used to accept hello with empty /
+    # whitespace-only node_name, a §3.1 shape violation). The cap
+    # is 64 chars (issue #14); min_length=1 + the validator below
+    # close the gap. The hello message may use either the bare
+    # name or "  work-laptop  " (whitespace is operator-friendly
+    # for shell-quoted input) — we strip it here.
+    node_name: str = Field(max_length=MAX_NODE_NAME_LEN, min_length=1)
     # Optional hints per PROTOCOL §3.1.
     node_version: str | None = Field(default=None, max_length=MAX_NODE_VERSION_LEN)
     platform: str | None = Field(default=None, max_length=MAX_PLATFORM_LEN)
     arch: str | None = Field(default=None, max_length=MAX_ARCH_LEN)
     capabilities: list[str] | None = None
+
+    @field_validator("node_name", mode="before")
+    @classmethod
+    def _strip_node_name(cls, value: Any) -> Any:
+        """Reject whitespace-only node_name (issue #21).
+
+        ``min_length=1`` catches the empty string but not ``"   "``
+        — a node_name of three spaces is not "non-empty" in any
+        useful sense, and PROTOCOL §3.1 says the field is required.
+        Strip + re-check here so the existing string-type check
+        above accepts both ``"work-laptop"`` and ``"  work-laptop  "``.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("node_name must not be whitespace-only")
+        return value
 
     @field_validator("capabilities", mode="before")
     @classmethod

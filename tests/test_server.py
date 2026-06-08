@@ -740,6 +740,102 @@ def test_hello_with_oversize_node_name_closes_with_4003(
         assert getattr(excinfo.value, "code", None) == 4003
 
 
+# ---------------------------------------------------------------------------
+# Issue #21 — hello node_name shape (empty / whitespace-only rejected)
+# ---------------------------------------------------------------------------
+
+
+def test_hello_with_empty_node_name_closes_with_4003(client: TestClient) -> None:
+    """A hello with an empty ``node_name`` is rejected → close 4003.
+
+    Regression for issue #21. PROTOCOL §3.1 says ``node_name`` is
+    required; the server used to accept ``""`` because Pydantic's
+    ``str`` type allows the empty string by default. The fix adds
+    ``min_length=1`` so the model raises before the handler runs.
+    """
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "",
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_hello_with_whitespace_only_node_name_closes_with_4003(
+    client: TestClient,
+) -> None:
+    """A hello with a whitespace-only ``node_name`` is rejected → 4003.
+
+    Regression for issue #21. ``min_length=1`` doesn't catch
+    ``"   "`` — a three-space name is "non-empty" by the Pydantic
+    check but useless in practice. The field validator strips and
+    re-checks. Without it, the server would have accepted the
+    connection and NodeRegistry would have stored an entry keyed
+    by whitespace, breaking ``hermes node list`` and
+    ``hermes node revoke``.
+    """
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "   ",
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_hello_with_missing_node_name_closes_with_4003(
+    client: TestClient,
+) -> None:
+    """A hello with ``node_name`` absent is rejected → close 4003.
+
+    Regression for issue #21. ``extra="forbid"`` plus a required
+    field means the model raises a ValidationError on a missing
+    key. Same 4003 close as the other shape violations.
+    """
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_hello_with_padded_node_name_is_accepted(
+    client: TestClient, store: TokenStore
+) -> None:
+    """A hello with a padded-but-non-whitespace ``node_name`` is accepted.
+
+    Counter-test for issue #21. The validator strips before the
+    registry lookup, so ``"  work-laptop  "`` and ``"work-laptop"``
+    land on the same NodeRegistry entry. Padded input is
+    operator-friendly (shell-quoted strings often have stray
+    whitespace); rejecting it would be a footgun.
+    """
+    store.create("work-laptop")
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "  work-laptop  ",
+            }
+        )
+        assert ws.receive_json()["type"] == "hello_ack"
+
+
 def test_auth_with_oversize_token_closes_with_4003(
     client: TestClient,
     store: TokenStore,
