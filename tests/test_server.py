@@ -49,6 +49,7 @@ from hermes_nodes_plugin.config import NodeServerConfig
 from hermes_nodes_plugin.registry import NodeRegistry
 from hermes_nodes_plugin.server import (
     CLOSE_AUTH_FAILED,
+    CLOSE_HANDSHAKE_TIMEOUT,
     CLOSE_MESSAGE_OUT_OF_ORDER,
     CLOSE_PROTOCOL_VERSION,
     PROTOCOL_MAJOR,
@@ -513,6 +514,7 @@ def test_close_codes_match_protocol() -> None:
     assert CLOSE_AUTH_FAILED == 4001
     assert CLOSE_PROTOCOL_VERSION == 4002
     assert CLOSE_MESSAGE_OUT_OF_ORDER == 4003
+    assert CLOSE_HANDSHAKE_TIMEOUT == 4004  # issue #13
 
 
 # ---------------------------------------------------------------------------
@@ -577,3 +579,313 @@ async def _is_connected(registry: NodeRegistry, name: str) -> bool:
 
 async def _list_connected(registry: NodeRegistry) -> list:
     return await registry.list_connected()
+
+
+# ---------------------------------------------------------------------------
+# Issue #13 — WSS handshake read timeout
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def short_timeouts_app(store: TokenStore, registry: NodeRegistry):
+    """App with sub-second timeouts so timeout tests run fast.
+
+    The default 10s would make every timeout test in this file sleep
+    for ~10s. We override to 0.2s — well below pytest's typical
+    per-test budget, and large enough to tolerate ASGI dispatch
+    overhead. The point is to exercise the timeout path, not to
+    measure timeout precision.
+    """
+    return create_app(
+        token_store=store,
+        registry=registry,
+        config=NodeServerConfig(handshake_timeout_seconds=0.2),
+    )
+
+
+@pytest.fixture
+def short_timeouts_client(short_timeouts_app) -> Iterator[TestClient]:
+    with TestClient(short_timeouts_app) as c:
+        yield c
+
+
+def test_hello_timeout_closes_with_4004_and_structured_error(
+    short_timeouts_client: TestClient,
+) -> None:
+    """Open a WSS, send nothing → server fires hello timeout → 4004.
+
+    Regression for issue #13. A client that opens the WSS and never
+    sends a hello used to park the server's coroutine + FD forever.
+    With ``handshake_timeout_seconds=0.2`` the server should:
+
+      1. wait the full 0.2s for ``hello``,
+      2. send a ``hello_err`` payload with ``reason="handshake_timeout"``
+         and ``code=4004`` (PROTOCOL §4 "Rate limit exceeded" — closest
+         fit for a resource-exhaustion-style rejection),
+      3. close the WSS with code 4004.
+
+    The client-side ``receive_json`` first surfaces the ``hello_err``
+    body; the subsequent ``receive_json`` raises a disconnect carrying
+    the close code.
+    """
+    with short_timeouts_client.websocket_connect("/ws/nodes") as ws:
+        # Don't send anything. Wait for the server to time out.
+        err = ws.receive_json()
+        assert err["type"] == "hello_err"
+        assert err["reason"] == "handshake_timeout"
+        assert err["code"] == 4004
+        # The next receive surfaces the disconnect with the close code.
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4004
+
+
+def test_auth_timeout_closes_with_4004_and_structured_error(
+    short_timeouts_client: TestClient,
+    store: TokenStore,
+) -> None:
+    """Send a valid hello, then go silent → server fires auth timeout → 4004.
+
+    Regression for issue #13, second path. The hello succeeds; the
+    node then never sends ``auth``. Server waits the full
+    ``handshake_timeout_seconds`` (0.2s here) and closes with 4004,
+    sending ``auth_err{reason: "handshake_timeout", code: 4004}``
+    first.
+    """
+    store.create("work-laptop")
+    with short_timeouts_client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "work-laptop",
+            }
+        )
+        hello_ack = ws.receive_json()
+        assert hello_ack["type"] == "hello_ack"
+
+        # Now go silent. Server should send auth_err and close 4004.
+        err = ws.receive_json()
+        assert err["type"] == "auth_err"
+        assert err["reason"] == "handshake_timeout"
+        assert err["code"] == 4004
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4004
+
+
+def test_happy_path_still_works_with_short_timeouts(
+    short_timeouts_client: TestClient,
+    store: TokenStore,
+    registry: NodeRegistry,
+) -> None:
+    """A client that completes the handshake within 0.2s still pairs.
+
+    Guards against an over-aggressive timeout setting that would
+    close legitimate fast handshakes. The whole handshake must
+    round-trip in less than ``handshake_timeout_seconds``; the
+    existing test infrastructure does this in a few ms.
+    """
+    token = store.create("work-laptop")
+    with short_timeouts_client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "work-laptop",
+            }
+        )
+        assert ws.receive_json()["type"] == "hello_ack"
+        ws.send_json(
+            {"type": "auth", "node_name": "work-laptop", "token": token}
+        )
+        assert ws.receive_json()["type"] == "auth_ok"
+    # Use the async predicate so we exercise the same path as the
+    # other tests (CPython dict reads are atomic, but ``in`` on the
+    # registry is implemented on top of the dict, not via the lock;
+    # the existing disconnect-cleanup test uses ``_run`` to
+    # guarantee the awaitable side fired).
+    assert _run(_is_connected(registry, "work-laptop")) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #14 — Pydantic payload caps + extra=forbid
+# ---------------------------------------------------------------------------
+
+
+def test_hello_with_oversize_node_name_closes_with_4003(
+    client: TestClient,
+) -> None:
+    """A 65-char ``node_name`` on hello is rejected → close 4003.
+
+    Regression for issue #14. A 1MB ``node_name`` is the canonical
+    DoS payload: Pydantic allocates the full string to validate it.
+    The 64-char cap means the model raises a ``ValidationError``
+    before any business logic runs; the handshake handler turns
+    that into close 4003 (Message out of order) — the same code as
+    a malformed hello, which is correct because the message was
+    unparseable from the protocol's POV.
+    """
+    long_name = "x" * 65
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": long_name,
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_auth_with_oversize_token_closes_with_4003(
+    client: TestClient,
+    store: TokenStore,
+) -> None:
+    """A 65-char ``token`` on auth is rejected → close 4003 (out of order).
+
+    Real tokens are 32 bytes url-safe base64 = 43 chars; the 64-char
+    cap is ~50% headroom. A 1MB token would have Pydantic allocate
+    1MB to validate (issue #14's headline DoS). The cap catches it
+    at the validation step; the handshake handler then closes with
+    4003 (the existing "your message was unparseable" code). The
+    server doesn't reveal *why* the auth failed — same as a wrong
+    token — so a misbehaving client can't probe the token-format
+    boundary on the wire.
+    """
+    store.create("work-laptop")
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "work-laptop",
+            }
+        )
+        assert ws.receive_json()["type"] == "hello_ack"
+        ws.send_json(
+            {
+                "type": "auth",
+                "node_name": "work-laptop",
+                "token": "x" * 65,  # 1 char over the cap
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_hello_with_unknown_field_closes_with_4003(client: TestClient) -> None:
+    """A hello with an unknown field is rejected with close 4003.
+
+    Regression for issue #14: ``extra="forbid"`` must reject
+    unknown fields with a 4xx (4003 here, the protocol-level
+    "your message was unparseable" code), not a 500 from an
+    unhandled Pydantic error.
+    """
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "laptop",
+                "unexpected_field": "evil",
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_auth_with_unknown_field_closes_with_4003(
+    client: TestClient, store: TokenStore
+) -> None:
+    """An auth with an unknown field is rejected with close 4003.
+
+    Same protection as the hello test, on the auth message. The
+    close code is 4003 (out of order / unparseable) — the existing
+    handler turns every auth ValidationError into a 4003 close
+    without a structured body, so a misbehaving client can't tell
+    which field was wrong.
+    """
+    store.create("work-laptop")
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "work-laptop",
+            }
+        )
+        assert ws.receive_json()["type"] == "hello_ack"
+        ws.send_json(
+            {
+                "type": "auth",
+                "node_name": "work-laptop",
+                "token": "anything",
+                "sneaky_field": "evil",
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+
+
+def test_hello_with_1mb_node_name_does_not_hang(
+    client: TestClient,
+) -> None:
+    """End-to-end: a 1MB ``node_name`` is rejected quickly.
+
+    Issue #14's headline reproduction case. With the cap in place,
+    the server closes within milliseconds and the test process
+    survives. (Without the cap, Pydantic would allocate the full
+    1MB to validate, and a few concurrent requests could exhaust
+    the server.) The assertion is on the close code + a generous
+    elapsed-time bound — both signal the cap fired early.
+    """
+    import time
+
+    huge = "x" * (1024 * 1024)  # 1 MB
+    start = time.monotonic()
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": huge,
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
+    elapsed = time.monotonic() - start
+    # Generous bound — Starlette's send_text on a 1MB string is the
+    # real cost, and that's bounded by TCP buffers, not our logic.
+    assert elapsed < 5.0, f"oversize-hello handling took {elapsed:.2f}s"
+
+
+def test_hello_with_oversize_capabilities_list_closes_with_4003(
+    client: TestClient,
+) -> None:
+    """A 1000-item capabilities list is rejected → close 4003.
+
+    The Pydantic per-item ``max_length`` only applies to scalar
+    fields; a million-item list would otherwise parse. The
+    ``_cap_capabilities`` validator on ``_HelloMessage`` enforces
+    the count cap so a list-shaped DoS payload fails validation
+    cheaply.
+    """
+    with client.websocket_connect("/ws/nodes") as ws:
+        ws.send_json(
+            {
+                "type": "hello",
+                "protocol_version": "0.1.0",
+                "node_name": "laptop",
+                "capabilities": ["x"] * 1000,
+            }
+        )
+        with pytest.raises(Exception) as excinfo:
+            ws.receive_json()
+        assert getattr(excinfo.value, "code", None) == 4003
