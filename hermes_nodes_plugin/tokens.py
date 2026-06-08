@@ -65,6 +65,115 @@ from hermes_nodes_plugin.errors import TokenStoreError
 # we just need strong).
 _TOKEN_BYTES = 32
 
+# Name validation policy (issues #15 / #18). The store accepts a node
+# name and binds it to a token. To prevent footguns the policy is:
+#
+#   * length 1-64 chars after str.strip()
+#   * ASCII printable (0x20-0x7E) — NUL and other control bytes are
+#     rejected; NUL in particular is a C-interop landmine for the
+#     Go-side node binary
+#   * path separators ('/' and '\\') are rejected so the name can
+#     never be confused with a filesystem path if a future task
+#     writes per-node files keyed by name
+#   * the '..' substring (path-traversal-shaped name) is rejected —
+#     cheap defense for downstream code that may key files off the
+#     name
+#   * non-ASCII code points (>= 0x80) are rejected — the "name" is
+#     a CLI identifier, not user content. This also closes the
+#     unicode-normalization edge case (NFC vs NFKC) flagged in #18:
+#     two names that look identical to a human can compare different
+#     at the byte level, which is a debugging nightmare for
+#     ``hermes node revoke --name <weird>``.
+_NAME_MAX = 64
+_DISALLOWED_NAME_CHARS = frozenset(("/", "\\"))
+
+
+def _is_ascii_printable(s: str) -> bool:
+    """True iff every char is in 0x20-0x7E (ASCII printable, no controls)."""
+    return all(0x20 <= ord(c) <= 0x7E for c in s)
+
+
+def _validate_name(name: str) -> str:
+    """Validate and normalise a node name. Returns the stripped name.
+
+    Raises:
+        TokenStoreError: name is empty, too long, or contains any
+            character outside the allow-list.
+
+    The rule lives here (not in the CLI) so every entry point — the
+    CLI, a future Python API consumer, the in-process server — gets
+    the same enforcement. The error messages are operator-friendly
+    and name the offending char / length so a copy-paste mistake is
+    easy to diagnose.
+    """
+    if not isinstance(name, str):
+        raise TokenStoreError(
+            f"node name must be a string, got {type(name).__name__}"
+        )
+    stripped = name.strip()
+    if not stripped:
+        raise TokenStoreError(
+            "node name must be a non-empty string (whitespace-only is not allowed)"
+        )
+    if len(stripped) > _NAME_MAX:
+        raise TokenStoreError(
+            f"node name {stripped[:16]!r}... is {len(stripped)} chars; "
+            f"max is {_NAME_MAX} (issue #15: prevent footgun long names)"
+        )
+    if not _is_ascii_printable(stripped):
+        # Name the first offending char to help the operator fix the
+        # copy-paste. ``ord()`` prints ``U+0000`` / ``U+000A`` for NUL /
+        # newline, which is exactly the signal they need.
+        for c in stripped:
+            if not (0x20 <= ord(c) <= 0x7E):
+                raise TokenStoreError(
+                    f"node name {stripped!r} contains a disallowed "
+                    f"character (codepoint U+{ord(c):04X}). Allowed: "
+                    f"ASCII printable (0x20-0x7E) excluding "
+                    f"{''.join(sorted(_DISALLOWED_NAME_CHARS))!r} and "
+                    f"the substring '..' (issue #15)."
+                )
+    for c in _DISALLOWED_NAME_CHARS:
+        if c in stripped:
+            raise TokenStoreError(
+                f"node name {stripped!r} contains path separator {c!r}; "
+                f"refusing (issue #15: path-traversal defense)."
+            )
+    if ".." in stripped:
+        raise TokenStoreError(
+            f"node name {stripped!r} contains '..' substring; "
+            f"refusing (issue #15: path-traversal defense)."
+        )
+    return stripped
+
+
+def _validate_presented_token(token: str) -> str:
+    """Validate a token presented to :meth:`TokenStore.validate`.
+
+    We don't enforce a length cap on the presented token (an attacker
+    can probe length via timing regardless, and the token is hashed
+    with SHA-256 so any length is cryptographically fine). What we
+    do reject: ASCII control characters, NUL, and path separators.
+    These are the same footguns as ``_validate_name`` and the
+    presented token is a peer-controlled input — defense in depth at
+    the store boundary is cheap.
+
+    On any failure this returns ``""`` (an empty string), which the
+    caller treats as "auth failed" without raising. We deliberately
+    don't raise from ``validate()`` because the existing contract
+    (and the tests) treat it as a boolean oracle, not a throwing
+    API: ``validate`` returns ``False`` for any failure, never
+    ``TokenStoreError``. Raising here would change the public shape
+    and break the ``test_validate_empty_inputs_return_false`` family.
+    """
+    if not isinstance(token, str) or not token:
+        return ""
+    if not _is_ascii_printable(token):
+        return ""
+    if "/" in token or "\\" in token:
+        return ""
+    return token
+
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -246,11 +355,11 @@ class TokenStore:
 
         Raises:
             TokenStoreError: ``name`` is non-unique against an
-                un-revoked record, or the store can't be written.
+                un-revoked record, ``name`` fails the character /
+                length policy (issue #15), or the store can't be
+                written.
         """
-        if not name or not name.strip():
-            raise TokenStoreError("node name must be a non-empty string")
-        name = name.strip()
+        name = _validate_name(name)
 
         token = _generate_token()
         token_hash = _hash_token(token)
@@ -298,11 +407,10 @@ class TokenStore:
             name: Node name to revoke.
 
         Raises:
-            TokenStoreError: Name is empty, or the store can't be written.
+            TokenStoreError: ``name`` fails the character / length
+                policy (issue #15), or the store can't be written.
         """
-        if not name or not name.strip():
-            raise TokenStoreError("node name must be a non-empty string")
-        name = name.strip()
+        name = _validate_name(name)
 
         def _write(records: list[_StoredRecord]) -> list[_StoredRecord]:
             found = False
@@ -340,6 +448,14 @@ class TokenStore:
                 bytes).
         """
         if not name or not presented_token:
+            return False
+        # Defense in depth (issue #15): the presented token is
+        # peer-controlled. We refuse obvious footguns (control bytes,
+        # NUL, path separators) at the store boundary, in the same
+        # spirit as ``_validate_name``. This never raises — the
+        # validate() contract is a boolean oracle, so a malformed
+        # token is just a failed auth.
+        if not _validate_presented_token(presented_token):
             return False
 
         records = self._read()

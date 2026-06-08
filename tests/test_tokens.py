@@ -560,3 +560,235 @@ def test_validate_uses_hmac_compare_digest() -> None:
     # must go through hmac.compare_digest, not == / !=).
     assert "candidate ==" not in validate_body
     assert "match.token_hash ==" not in validate_body
+
+
+# ---------------------------------------------------------------------------
+# TokenStore name validation (issues #15 / #18)
+# ---------------------------------------------------------------------------
+#
+# Issue #15: the store accepted any non-whitespace string as a node
+# name, including 100k-char strings, NUL bytes, newlines, and path
+# separators. Issue #18: the test suite covered the empty / whitespace
+# cases but nothing else. This section pins the new validation policy
+# in both directions — what MUST be rejected and what MUST pass — so
+# future refactors of ``_validate_name`` can't silently loosen the
+# rule.
+#
+# Policy:
+#   * length 1-64 after str.strip()
+#   * ASCII printable (0x20-0x7E) only
+#   * reject ``/`` and ``\`` (path separators)
+#   * reject ``..`` substring (path-traversal-shaped)
+#   * non-ASCII / control / NUL -> rejected with a message that names
+#     the offending codepoint so a copy-paste mistake is easy to spot
+
+
+class TestNameValidationEdgeCases:
+    """Pin the name-validation policy in :func:`tokens._validate_name`."""
+
+    def test_create_name_at_min_length_succeeds(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("a")
+        assert store.validate("a", token) is True
+
+    def test_create_name_at_max_length_succeeds(
+        self, store: TokenStore
+    ) -> None:
+        name = "a" * 64
+        token = store.create(name)
+        assert store.validate(name, token) is True
+
+    def test_create_name_above_max_length_rejected(
+        self, store: TokenStore
+    ) -> None:
+        name = "a" * 65
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create(name)
+        msg = str(exc_info.value)
+        assert "65" in msg
+        assert "64" in msg  # the cap
+
+    def test_create_name_one_thousand_chars_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError, match="1000 chars"):
+            store.create("a" * 1_000)
+
+    def test_revoke_name_above_max_length_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.revoke("a" * 65)
+        assert "64" in str(exc_info.value)
+
+    def test_create_name_with_nul_byte_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("name\x00with-nul")
+        assert "U+0000" in str(exc_info.value)
+
+    def test_create_name_with_newline_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("name\nwithnewline")
+        assert "U+000A" in str(exc_info.value)
+
+    def test_create_name_with_carriage_return_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("name\rwithreturn")
+        assert "U+000D" in str(exc_info.value)
+
+    def test_create_name_with_tab_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("name\twithtab")
+        assert "U+0009" in str(exc_info.value)
+
+    def test_create_name_with_del_char_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("name\x7Fwithdel")
+        assert "U+007F" in str(exc_info.value)
+
+    def test_create_name_with_all_printable_special_chars_succeeds(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop-1_test.node (v2)+@home")
+        assert store.validate("laptop-1_test.node (v2)+@home", token) is True
+
+    def test_create_name_with_leading_trailing_whitespace_stripped(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("  work-laptop  ")
+        assert store.validate("work-laptop", token) is True
+
+    def test_create_name_with_forward_slash_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError, match="path separator"):
+            store.create("name/with/slash")
+
+    def test_create_name_with_backslash_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError, match="path separator"):
+            store.create("name\\with\\backslash")
+
+    def test_create_name_with_dotdot_substring_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("foo..bar")
+        assert ".." in str(exc_info.value)
+        with pytest.raises(TokenStoreError):
+            store.create("..")
+        with pytest.raises(TokenStoreError):
+            store.create("../etc/passwd")
+
+    def test_create_name_with_single_dot_succeeds(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop.home.lan")
+        assert store.validate("laptop.home.lan", token) is True
+
+    def test_revoke_name_with_nul_byte_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.revoke("name\x00with-nul")
+        assert "U+0000" in str(exc_info.value)
+
+    def test_revoke_name_with_forward_slash_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError, match="path separator"):
+            store.revoke("a/b")
+
+    def test_create_name_with_unicode_emoji_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("laptop💻")
+        assert "U+" in str(exc_info.value)
+
+    def test_create_name_with_nfkd_normalized_lookalike_rejected(
+        self, store: TokenStore
+    ) -> None:
+        # 'ﬃ' (U+FB03, latin small ligature ffi) is a non-ASCII
+        # codepoint. The exact codepoint reported by the error
+        # message is the first one outside 0x20-0x7E, which for
+        # this string happens to be U+FB03.
+        with pytest.raises(TokenStoreError) as exc_info:
+            store.create("eﬃcient")
+        assert "U+FB03" in str(exc_info.value)
+
+    def test_create_name_with_non_string_type_rejected(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError, match="must be a string"):
+            store.create(123)  # type: ignore[arg-type]
+
+    def test_rejected_create_does_not_create_record(
+        self, store: TokenStore
+    ) -> None:
+        with pytest.raises(TokenStoreError):
+            store.create("bad/name")
+        assert store.list() == []
+        token = store.create("good-name")
+        assert store.validate("good-name", token) is True
+
+
+# ---------------------------------------------------------------------------
+# TokenStore.validate() presented-token validation (issue #15, defense
+# in depth at the store boundary). validate() is a boolean oracle: a
+# malformed presented token returns False, not TokenStoreError.
+# ---------------------------------------------------------------------------
+
+
+class TestPresentedTokenValidation:
+    """Pin the deny-list applied to tokens in :meth:`TokenStore.validate`."""
+
+    def test_validate_with_nul_in_presented_token_returns_false(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop1")
+        assert store.validate("laptop1", "good\x00bad") is False
+
+    def test_validate_with_newline_in_presented_token_returns_false(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop1")
+        assert store.validate("laptop1", "good\nbad") is False
+
+    def test_validate_with_path_separator_in_presented_token_returns_false(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop1")
+        assert store.validate("laptop1", "good/bad") is False
+        assert store.validate("laptop1", "good\\bad") is False
+
+    def test_validate_with_unicode_in_presented_token_returns_false(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop1")
+        assert store.validate("laptop1", "good💻bad") is False
+
+    def test_validate_with_legit_token_still_works(
+        self, store: TokenStore
+    ) -> None:
+        token = store.create("laptop1")
+        assert store.validate("laptop1", token) is True
+
+    def test_validate_with_malformed_presented_token_does_not_update_last_used_at(
+        self, store: TokenStore
+    ) -> None:
+        store.create("laptop1")
+        store.validate("laptop1", "good\nbad")
+        assert store.list()[0].last_used_at is None
