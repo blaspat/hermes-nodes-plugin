@@ -204,22 +204,63 @@ class NodeRegistry:
             await self.fail_node_waiters(conn.name, "connection_replaced")
         return previous
 
-    async def unregister(self, name: str) -> NodeConnection | None:
+    async def unregister(
+        self, name: str, *, expected_session_id: str | None = None
+    ) -> NodeConnection | None:
         """Remove the entry for ``name``. Returns what was removed, or ``None``.
 
         Safe to call from a connection's ``finally`` block — calling
         with a name that was never registered is a no-op.
 
+        Args:
+            name: The node name to unregister.
+            expected_session_id: When provided, the pop is a no-op
+                unless the entry currently under ``name`` has a
+                matching :attr:`NodeConnection.session_id`. This is
+                the reconnect-safety guard: a connection's
+                ``finally`` block can fire after a newer connection
+                has already replaced it on the slot (PROTOCOL §1
+                reconnect), and the old ``finally`` must not pop the
+                new entry. The server passes the auth-time
+                ``session_id`` here; a bare caller (e.g. a test, or a
+                forced ``revoke`` that doesn't care which session
+                it's removing) can pass ``None`` to disable the
+                guard and behave like the legacy unconditional
+                ``unregister``.
+
         Also fails every pending waiter for ``name`` with
         :class:`_WaiterCancelled` (``reason="node_disconnected"``).
         A closed WebSocket can never answer its in-flight calls, so we
-        wake them rather than letting them time out.
+        wake them rather than letting them time out. Waiters are only
+        failed when an entry is actually popped — a guarded no-op
+        leaves the new connection's in-flight calls untouched.
         """
         async with self._lock:
-            removed = self._connections.pop(name, None)
-        if removed is not None:
-            await self.fail_node_waiters(name, "node_disconnected")
-        return removed
+            current = self._connections.get(name)
+            if current is None:
+                return None
+            if (
+                expected_session_id is not None
+                and current.session_id != expected_session_id
+            ):
+                # The slot has been replaced by a newer connection.
+                # The old session's finally-block must not pop the
+                # new entry, and must not fail the new connection's
+                # in-flight waiters with a bogus "node_disconnected"
+                # reason. See issue #10.
+                logger.debug(
+                    "unregister(%r) skipped — current session_id=%r, expected=%r",
+                    name,
+                    current.session_id,
+                    expected_session_id,
+                )
+                return None
+            # ``current`` is non-None and matches the expected
+            # session_id (or no guard was requested), so the
+            # remove is guaranteed to succeed — no default needed.
+            del self._connections[name]
+        await self.fail_node_waiters(name, "node_disconnected")
+        return current
 
     async def get(self, name: str) -> NodeConnection | None:
         """Return the live connection for ``name``, or ``None``."""

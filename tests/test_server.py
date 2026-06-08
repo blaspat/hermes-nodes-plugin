@@ -438,6 +438,13 @@ def test_second_connection_from_same_name_replaces_first(
     Common operational case: the node process restarts, dials in
     again with the same token. The server must not keep the dead
     socket around; it must hand the slot to the new one.
+
+    Issue #10 (reconnect-safety): the old connection's ``finally``
+    block must NOT pop the new connection's slot when the server
+    closes the old WebSocket as part of the replace path. We assert
+    that here by calling the registry's ``unregister`` with the
+    *old* session_id after the replace and verifying the new
+    entry survives.
     """
     token = store.create("flappy-laptop")
 
@@ -472,8 +479,25 @@ def test_second_connection_from_same_name_replaces_first(
 
         # New session_id is a different UUID.
         assert session1 != session2
-        # Registry still has exactly one entry under the same name.
+        # Registry still has exactly one entry under the same name,
+        # and that entry is the NEW connection's (not the old one's).
         assert len(registry) == 1
+        current = _run(registry.get("flappy-laptop"))
+        assert current is not None
+        assert current.session_id == session2
+
+        # The fix-lock for issue #10: the OLD connection's finally
+        # block can fire late (after the server has already
+        # replaced it on the slot). With the new
+        # ``expected_session_id`` guard, that finally is a no-op.
+        # We simulate it by calling ``unregister`` with the old
+        # session_id — the new entry must survive.
+        removed = _run(
+            registry.unregister("flappy-laptop", expected_session_id=session1)
+        )
+        assert removed is None  # guarded no-op
+        assert "flappy-laptop" in registry
+        assert _run(registry.get("flappy-laptop")).session_id == session2  # type: ignore[union-attr]
 
     # Both sockets closed now → registry empty.
     assert "flappy-laptop" not in registry

@@ -358,7 +358,10 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
-            await registry.unregister(auth.node_name)
+            # Pass ``session_id`` so the old connection's finally-block
+            # cannot pop the new connection's entry on the reconnect
+            # path. See hermes-nodes-plugin issue #10.
+            await registry.unregister(auth.node_name, expected_session_id=session_id)
 
     return app
 

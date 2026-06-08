@@ -52,7 +52,7 @@ from typing import Iterator
 
 import pytest
 
-from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
+from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry, _WaiterCancelled
 
 
 # ---------------------------------------------------------------------------
@@ -426,3 +426,305 @@ def test_node_connection_last_heartbeat_default_is_connected_at() -> None:
     """``last_heartbeat`` is auto-set to ``connected_at`` if omitted."""
     conn = _make_conn("laptop")
     assert conn.last_heartbeat == conn.connected_at
+
+
+# ---------------------------------------------------------------------------
+# Waiter surface (issue #17 — TestNodeRegistryWaiters)
+# ---------------------------------------------------------------------------
+#
+# The waiter registry is the bridge between the server's inbound dispatch
+# loop and ``NodeEnvironment.execute``. Five behaviours must hold for the
+# server to be safe under reconnect storms and for the environment to
+# surface clean errors on the caller side:
+#
+#   1. ``register_waiter`` returns a pending ``asyncio.Future``;
+#      ``complete_waiter`` resolves it with the inbound payload;
+#      ``unregister_waiter`` is a no-op-safe cleanup.
+#   2. ``fail_node_waiters`` resolves every waiter for a node with
+#      ``_WaiterCancelled`` carrying the right ``reason``.
+#   3. The lock-ordering invariant: a callback that re-enters the
+#      registry (e.g. an exception handler that re-registers) does not
+#      deadlock. This is the property the two-phase
+#      snapshot-outside-the-lock design exists to guarantee.
+#   4. The replace path (issue #10 fix-lock): when ``register`` is
+#      called with a new connection, the OLD connection's waiters are
+#      failed with ``reason="connection_replaced"`` and the NEW
+#      connection's waiters are *not* affected.
+#   5. ``register_waiter`` for a name with no current connection still
+#      returns a future (the future is pending until the caller
+#      observes it or ``fail_node_waiters`` resolves it).
+
+# 100ms is short enough to fail loud on a deadlock, long enough to
+# tolerate event-loop scheduling jitter on a busy CI box.
+_WAIT_TIMEOUT_S = 0.1
+
+
+async def _drain(future: asyncio.Future, timeout: float = _WAIT_TIMEOUT_S) -> None:
+    """Await ``future`` (consuming its exception if any) with a timeout.
+
+    A short timeout makes a deadlock in the registry surface as a
+    clear test failure rather than hanging the suite. Callers
+    inspect ``future.exception()`` and ``future.result()``
+    separately so this helper can swallow the exception.
+    """
+    try:
+        await asyncio.wait_for(_wait(future), timeout=timeout)
+    except asyncio.TimeoutError:
+        pytest.fail(
+            f"future {future!r} did not resolve within {timeout}s — "
+            "likely a deadlock or missed resolution"
+        )
+
+
+async def _wait(future: asyncio.Future) -> None:
+    """Await ``future`` (consumes its exception if any)."""
+    try:
+        await future
+    except BaseException:
+        # Swallow — caller inspects ``future.exception()`` separately
+        # so the test can assert on ``reason`` etc.
+        pass
+
+
+class TestNodeRegistryWaiters:
+    """Locks in the waiter surface contract (issue #17)."""
+
+    # ----- 1. register / complete / unregister round-trip ----------------
+
+    def test_register_then_complete_resolves_with_payload(self) -> None:
+        """The happy path: register a waiter, complete it with the payload."""
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            await registry.register(_make_conn("laptop"))
+            future = await registry.register_waiter("laptop", "r-1")
+            # Future is pending until complete_waiter fires.
+            assert not future.done()
+
+            assert (
+                await registry.complete_waiter("laptop", "r-1", {"out": "ok"}) is True
+            )
+            # The future is resolved with the exact payload we passed in.
+            await _drain(future)
+            assert future.exception() is None
+            assert future.result() == {"out": "ok"}
+            # And the waiter is gone from the map (no leak).
+            assert await registry.complete_waiter("laptop", "r-1", {}) is False
+
+        asyncio.run(scenario())
+
+    def test_unregister_waiter_is_idempotent_and_no_resolve(self) -> None:
+        """``unregister_waiter`` removes the future without resolving it."""
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            await registry.register(_make_conn("laptop"))
+            future = await registry.register_waiter("laptop", "r-1")
+            await registry.unregister_waiter("laptop", "r-1")
+            # Future never resolved: still pending, no result, no
+            # exception. Callers can decide whether to keep waiting
+            # or treat the future as orphaned.
+            assert not future.done()
+            # And a second unregister is a safe no-op.
+            await registry.unregister_waiter("laptop", "r-1")
+            # The same is true for a never-registered request_id.
+            await registry.unregister_waiter("laptop", "r-ghost")
+
+        asyncio.run(scenario())
+
+    # ----- 2. fail_node_waiters -------------------------------------------
+
+    def test_fail_node_waiters_resolves_every_waiter_with_reason(self) -> None:
+        """All waiters for a node are failed with ``_WaiterCancelled(reason)``."""
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            await registry.register(_make_conn("laptop"))
+            f1 = await registry.register_waiter("laptop", "r-1")
+            f2 = await registry.register_waiter("laptop", "r-2")
+            f_other = await registry.register_waiter("desktop", "r-1")
+
+            woken = await registry.fail_node_waiters("laptop", "node_disconnected")
+            assert woken == 2
+
+            for fut in (f1, f2):
+                await _drain(fut)
+                exc = fut.exception()
+                assert isinstance(exc, _WaiterCancelled)
+                assert exc.reason == "node_disconnected"
+
+            # The other node's waiter was not touched.
+            assert not f_other.done()
+
+        asyncio.run(scenario())
+
+    def test_fail_node_waiters_with_no_waiters_returns_zero(self) -> None:
+        """Failing an idle node is a no-op (return value 0)."""
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            await registry.register(_make_conn("laptop"))
+            assert await registry.fail_node_waiters("laptop", "anything") == 0
+
+        asyncio.run(scenario())
+
+    # ----- 3. lock ordering (the snapshot/resolve split) -----------------
+
+    def test_exception_callback_can_re_enter_registry(self) -> None:
+        """A callback fired during ``set_exception`` can re-enter the registry.
+
+        Regression lock for the two-phase ``fail_node_waiters`` design:
+        if the implementation ever re-acquires the lock before calling
+        ``set_exception``, a callback that awaits on the registry will
+        deadlock. The test's short ``_WAIT_TIMEOUT_S`` makes the
+        deadlock surface as a clear failure.
+        """
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            await registry.register(_make_conn("laptop"))
+            await registry.register(_make_conn("desktop"))
+            reentered: list[str] = []
+            reentry_done = asyncio.Event()
+
+            future = await registry.register_waiter("laptop", "r-1")
+            # The callback awaits on the registry — a lock-then-resolve
+            # implementation would deadlock here. We schedule it via
+            # ``add_done_callback`` so it fires inside
+            # ``fail_node_waiters``'s second phase, then ``await`` an
+            # ``asyncio.Event`` for a deterministic sync point (avoids
+            # racing on ``asyncio.sleep(0)``).
+            future.add_done_callback(
+                lambda fut: asyncio.ensure_future(
+                    _reenter(registry, fut, reentered, reentry_done)
+                )
+            )
+
+            await registry.fail_node_waiters("laptop", "node_disconnected")
+
+            # Wait for the re-entry path to finish (or timeout via
+            # the asyncio.Event mechanism — but pytest's
+            # ``_drain`` below also bounds the wait, so a deadlock
+            # here surfaces as a clear test failure rather than a
+            # hang).
+            await asyncio.wait_for(reentry_done.wait(), timeout=_WAIT_TIMEOUT_S)
+            await _drain(future)
+            assert isinstance(future.exception(), _WaiterCancelled)
+            # The callback ran to completion and re-entered the
+            # registry twice (a register + an unregister on desktop).
+            assert reentered == ["registered", "unregistered"]
+
+        async def _reenter(
+            registry: NodeRegistry,
+            fut: asyncio.Future,
+            log: list[str],
+            done: asyncio.Event,
+        ) -> None:
+            try:
+                # Only act if the failure was the one we set up.
+                exc = fut.exception()
+                if isinstance(exc, _WaiterCancelled):
+                    # First re-entry: register a fresh waiter on
+                    # another node.
+                    f2 = await registry.register_waiter("desktop", "r-1")
+                    log.append("registered")
+                    # Second re-entry: clean it up. The first one is
+                    # the load-bearing call (proves we could
+                    # re-acquire the lock under the exception
+                    # handler); this one proves the lock is released
+                    # cleanly afterwards.
+                    await registry.unregister_waiter("desktop", "r-1")
+                    log.append("unregistered")
+                    assert not f2.done()
+            finally:
+                # Signal the test that the re-entry path completed
+                # — even on failure — so a deadlock surfaces as a
+                # clear test failure rather than a hang.
+                done.set()
+
+        asyncio.run(scenario())
+
+    # ----- 4. replace path (issue #10 fix-lock) ---------------------------
+
+    def test_replace_path_fails_old_connection_waiters_only(self) -> None:
+        """When ``register`` replaces, only the OLD connection's waiters fail.
+
+        This is the regression lock for issue #10. The old code keyed
+        the connection table by name and used ``(name, request_id)``
+        for waiters — so when a new connection took over the slot,
+        ``fail_node_waiters`` for the old connection couldn't tell
+        the waiters apart. The new contract: registering a new
+        connection under an existing name fails the old connection's
+        in-flight waiters with ``reason="connection_replaced"`` and
+        leaves the new connection's waiters alone.
+        """
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            old = _make_conn("laptop", session_id="sess-old")
+            new = _make_conn("laptop", session_id="sess-new")
+            await registry.register(old)
+
+            # Two in-flight calls on the old connection. These are
+            # what the old bug would have wrongly fired when the new
+            # connection registered.
+            old_f1 = await registry.register_waiter("laptop", "r-1")
+            old_f2 = await registry.register_waiter("laptop", "r-2")
+
+            # The NEW connection registers and replaces the old one.
+            await registry.register(new)
+
+            # A new in-flight call against the new connection. This
+            # MUST survive the replace — issue #10.
+            new_f1 = await registry.register_waiter("laptop", "r-3")
+
+            for fut in (old_f1, old_f2):
+                await _drain(fut)
+                exc = fut.exception()
+                assert isinstance(exc, _WaiterCancelled)
+                assert exc.reason == "connection_replaced"
+
+            # The new connection's waiter is still pending.
+            assert not new_f1.done()
+            # And it's reachable via the normal completion path.
+            assert await registry.complete_waiter("laptop", "r-3", {"ok": True}) is True
+            await _drain(new_f1)
+            assert new_f1.exception() is None
+            assert new_f1.result() == {"ok": True}
+
+        asyncio.run(scenario())
+
+    # ----- 5. register_waiter for an unknown name -------------------------
+
+    def test_register_waiter_for_unknown_name_returns_pending_future(self) -> None:
+        """No-connection register: future is created and pending, not blocked.
+
+        The docstring contract: callers should ``is_connected`` first,
+        or accept that the future will resolve when the registry
+        eventually fails it. The future is *created* regardless — the
+        caller is not blocked at registration time — and a follow-up
+        ``fail_node_waiters`` for the same name resolves it with
+        ``_WaiterCancelled`` through the normal failure path.
+        """
+
+        async def scenario() -> None:
+            registry = NodeRegistry()
+            # No connection is registered for "ghost".
+            assert await registry.is_connected("ghost") is False
+
+            future = await registry.register_waiter("ghost", "r-1")
+            # Created and pending — the call did not block on
+            # "is there a connection?" and did not pre-resolve.
+            assert isinstance(future, asyncio.Future)
+            assert not future.done()
+
+            # The waiter's entry exists in the map (we can find it
+            # by failing waiters for the same name).
+            woken = await registry.fail_node_waiters("ghost", "no_connection")
+            assert woken == 1
+            await _drain(future)
+            exc = future.exception()
+            assert isinstance(exc, _WaiterCancelled)
+            assert exc.reason == "no_connection"
+
+        asyncio.run(scenario())
