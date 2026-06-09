@@ -919,26 +919,26 @@ class TestPresentedTokenValidation:
     def test_validate_with_nul_in_presented_token_returns_false(
         self, store: TokenStore
     ) -> None:
-        token = store.create("laptop1")
+        store.create("laptop1")
         assert store.validate("laptop1", "good\x00bad") is False
 
     def test_validate_with_newline_in_presented_token_returns_false(
         self, store: TokenStore
     ) -> None:
-        token = store.create("laptop1")
+        store.create("laptop1")
         assert store.validate("laptop1", "good\nbad") is False
 
     def test_validate_with_path_separator_in_presented_token_returns_false(
         self, store: TokenStore
     ) -> None:
-        token = store.create("laptop1")
+        store.create("laptop1")
         assert store.validate("laptop1", "good/bad") is False
         assert store.validate("laptop1", "good\\bad") is False
 
     def test_validate_with_unicode_in_presented_token_returns_false(
         self, store: TokenStore
     ) -> None:
-        token = store.create("laptop1")
+        store.create("laptop1")
         assert store.validate("laptop1", "good💻bad") is False
 
     def test_validate_with_legit_token_still_works(
