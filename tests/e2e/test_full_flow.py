@@ -44,8 +44,9 @@ Test stages
    drops the socket; registry marks it gone; ``node_list`` agrees.
 6. ``test_revoke_flow_blocks_subsequent_connects`` — after revoke,
    a fresh connect with the same token is rejected with close 4001.
-7. ``test_rate_limit_closes_with_4004`` — placeholder; skipped
-   until FR-2.6 lands (see body).
+7. ``test_rate_limit_closes_with_4004`` — a burst past the
+   per-node cap triggers a ``rate_limit`` error frame + close
+   4004 (FR-2.6).
 
 Style notes
 -----------
@@ -820,27 +821,106 @@ async def test_revoke_flow_blocks_subsequent_connects(
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: rate limit (FR-2.6) — placeholder
+# Stage 7: rate limit (FR-2.6)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason="Body is a NotImplementedError placeholder for the FR-2.6 e2e burst → 4004 close path. The server-side wiring has since landed (PR #37: _RateLimiter at hermes_nodes_plugin/ratelimit.py, dispatch-loop check at hermes_nodes_plugin/server.py:547), and tests/test_ratelimit.py locks the algorithm. This test would re-verify the wiring; overlaps with test_ratelimit integration coverage. Remove in a follow-up card that fills in the body."
-)
 @pytest.mark.asyncio
 async def test_rate_limit_closes_with_4004(
-    running_server: uvicorn.Server,
-    store: TokenStore,
-    registry: NodeRegistry,
+    store: TokenStore, registry: NodeRegistry
 ) -> None:
-    """100 exec calls in <1s → 101st gets close 4004 (PROTOCOL §4).
+    """Burst past the cap → server sends ``rate_limit`` frame + close 4004.
 
-    Skipped until the server-side rate-limit wiring lands. When
-    it does, the test body should:
-      1. Pair a node (same as stages 3-4).
-      2. In a tight loop, send 100 ``exec`` requests with the
-         fake node replying ``exec_result`` for each.
-      3. On the 101st request, assert the server closes with
-         code 4004 and sends no ``exec_result``.
+    Acceptance stage #7: when a single node sends more messages
+    than ``rate_limit_per_node`` allows in a 1s sliding window,
+    the server sends a structured ``rate_limit`` error frame
+    (PROTOCOL §2) and closes the WSS with code 4004 (PROTOCOL §4).
+
+    The sliding-window algorithm itself is locked by the unit tests
+    in ``tests/test_ratelimit.py``; the dispatch-loop wiring at
+    ``hermes_nodes_plugin/server.py:547`` is locked by the
+    ``TestClient`` integration tests in the same file. This test
+    is the e2e counterpart — it spins a real uvicorn server with
+    a low-cap limiter and drives a real WebSocket to confirm the
+    wiring survives the production transport.
+
+    Why a 3-cps cap, not the spec's 100-cps? Same reason the
+    ``TestClient`` integration tests use a low cap: a 100-cps
+    test would need 100 round-trips to exercise the rejection
+    path, blowing the test budget. 3 cps + 4 messages is enough
+    to drive the boundary.
+
+    Timing: this test uses real ``time.monotonic``. A stalled
+    CI runner that ages out the 1s window between the 3rd and
+    4th message would see all 4 calls accepted and the
+    assertion fail. Quinn's S1 finding proposed a clock
+    injection seam on ``create_app``; when that lands, this
+    test should switch to a fake clock for full
+    determinism. Until then, the 4 messages are sent in a
+    single tight loop after the handshake completes, so the
+    real-clock window is the same in the test process as on
+    the server's loop. Follow-up card: t_c9cf21f0 / S1.
     """
-    raise NotImplementedError("server-side rate-limit wiring not yet implemented")
+    from websockets.exceptions import ConnectionClosed
+
+    from hermes_nodes_plugin.ratelimit import _RateLimiter
+
+    cap = 3
+    rate_limiter = _RateLimiter(max_calls=cap, window_seconds=1.0)
+    app = create_app(
+        token_store=store,
+        registry=registry,
+        config=NodeServerConfig(),
+        rate_limiter=rate_limiter,
+    )
+    with _running_server(app) as server:
+        ws_url = _ws_url(server)
+        token = store.create(_NODE_NAME)
+
+        # Pair the fake node (same as stages 2-6).
+        ws = await _pair_node(ws_url, token, _NODE_NAME)
+        try:
+            # ``cap`` accepted inbound messages will pass through
+            # the rate limiter; the next one trips it. We use
+            # ``pong`` (unknown to the server, silently accepted
+            # as heartbeat activity — see ``server.py``'s
+            # ``_route_inbound`` for unknown types) so the test
+            # doesn't need a real :class:`NodeEnvironment` to
+            # consume ``exec`` requests. After ``cap`` pongs we
+            # expect the server to send the ``rate_limit`` frame
+            # and close with 4004 on the very next send.
+            for i in range(cap):
+                await ws.send(json.dumps({"type": "pong", "i": i}))
+
+            # The 4th send trips the limiter. We send one more
+            # pong; the server's dispatch loop calls
+            # ``rate_limiter.check`` which now returns False,
+            # so it sends the ``rate_limit`` error frame and
+            # closes the socket before our pong is otherwise
+            # consumed. We read the structured frame…
+            await ws.send(json.dumps({"type": "pong", "i": cap}))
+            err = json.loads(await ws.recv())
+            assert err["type"] == "rate_limit", f"unexpected: {err!r}"
+            assert err["reason"] == "rate_limit_exceeded"
+            assert err["code"] == 4004
+            assert err["node_name"] == _NODE_NAME
+            assert err["limit_per_second"] == cap
+
+            # …and then the next read surfaces the close with
+            # code 4004. ``websockets`` (we use 16+) raises
+            # :class:`ConnectionClosed` after a server-initiated
+            # close frame; ``rcvd`` carries the code/reason.
+            with pytest.raises(ConnectionClosed) as excinfo:
+                await ws.recv()
+            rcvd = excinfo.value.rcvd
+            assert rcvd is not None, "server closed without a close frame"
+            assert rcvd.code == 4004, f"expected close 4004, got {rcvd.code}"
+        finally:
+            # The server initiated the close; on the client side
+            # the socket is already closed, but a redundant
+            # ``close()`` is a no-op and keeps the fake node's
+            # task path symmetric with the other stages.
+            try:
+                await ws.close()
+            except Exception:
+                pass
