@@ -28,19 +28,9 @@
 | FR-2.3 | Validates auth (token match, not revoked, name match), closes 4001 | ✅ | `server.py:74` `CLOSE_AUTH_FAILED = 4001`, `tokens.py:434-474` `verify_presented` with `hmac.compare_digest`, `server.py:404/436/452/460` enforcement |
 | FR-2.4 | On auth OK, registers connection in registry, starts app messages | ✅ | `registry.py:register()` after `auth_ok`, `server.py` continues to message loop |
 | FR-2.5 | Drops removed from registry, marked `disconnected` | ✅ | `registry.py:unregister()` + `lifecycle.py:_sweep_stale_connections()` (issue #19); `cli.py` reflects state in `list` |
-| FR-2.6 | **Rate limit 100 calls/sec per node, sliding window, close 4004 on excess** | ❌ | **NOT IMPLEMENTED.** No rate-limit class anywhere in `server.py`; no calls/second tracking; no `sliding_window` references. 4004 is used for handshake timeout (a different code path) but never for rate limit. This is a real spec gap. |
+| FR-2.6 | **Rate limit 100 calls/sec per node, sliding window, close 4004 on excess** | ✅ | Implemented (PR #37). `_RateLimiter` class at `hermes_nodes_plugin/ratelimit.py` (sliding 1-second window keyed on `node_name`); wired into the dispatch loop at `hermes_nodes_plugin/server.py:547`; on excess sends a `rate_limit` error frame and closes with `CLOSE_RATE_LIMIT_EXCEEDED = 4004` (`server.py:83`). Algorithm covered by `tests/test_ratelimit.py`. |
 
-**FR-2: 5/6 implemented; FR-2.6 missing.**
-
-### FR-2.6 — what to do
-
-Add a `_RateLimiter` class (e.g. `server.py` or new `ratelimit.py`) keyed on `node_name`, sliding 1-second window, evict on the 101st call in any window, send a `rate_limit` error frame and close 4004. Need:
-
-- Class + tests (window-rollover edge cases, per-node isolation, close-vs-deny choice)
-- Plumb into the message dispatch loop in `server.py` (after the `auth_ok` branch, before the action handler)
-- Add to the e2e test (which doesn't exist yet — see v1 criterion #6)
-
-Effort estimate: small. ~80 LOC + 5-6 tests. Genuine missing requirement, not a polish item.
+**FR-2: 6/6 implemented.**
 
 ## FR-3 Agent integration
 
@@ -164,10 +154,11 @@ Effort estimate: small. ~80 LOC + 5-6 tests. Genuine missing requirement, not a 
 
 **Genuinely missing requirements (need work):**
 
-1. **FR-2.6 — Rate limiting (100 calls/sec, 4004 on excess).** No code, no test. Most concrete spec gap.
-2. **NFR-5.1 — CI + coverage gate.** No `.github/workflows/`, no `pytest-cov` in deps. Tests exist and pass locally, but there's no machine-checked 80% threshold.
-3. **v1 #6 — `tests/e2e/test_full_flow.py`.** File doesn't exist. The e2e directory doesn't exist. This is the canonical acceptance test the spec was written around.
-4. **v1 #7 — `SECURITY-REVIEW.md` (posture assessment).** Have `SECURITY.md` (threat model + disclosure), which is adjacent but not the same artifact. A 1-2 page "what we checked, what we found, residual risks" document on top of the existing `SECURITY.md` is what's missing.
+1. **NFR-5.1 — CI + coverage gate.** No `.github/workflows/`, no `pytest-cov` in deps. Tests exist and pass locally, but there's no machine-checked 80% threshold.
+2. **v1 #6 — `tests/e2e/test_full_flow.py`.** File doesn't exist. The e2e directory doesn't exist. This is the canonical acceptance test the spec was written around.
+3. **v1 #7 — `SECURITY-REVIEW.md` (posture assessment).** Have `SECURITY.md` (threat model + disclosure), which is adjacent but not the same artifact. A 1-2 page "what we checked, what we found, residual risks" document on top of the existing `SECURITY.md` is what's missing.
+
+**Resolved since audit (PR #37):** FR-2.6 (rate limit) is now implemented — see row in §FR-2.6 and `hermes_nodes_plugin/ratelimit.py`.
 
 **Spec deviations (intentional, need to update the spec or the code):**
 
@@ -181,7 +172,6 @@ Effort estimate: small. ~80 LOC + 5-6 tests. Genuine missing requirement, not a 
 - **NFR-2 — Performance NFRs unmeasured.** Not blocking; no spec says "prove it with a benchmark." Add a load test as a v0.2 nicety.
 
 **Pattern:** most of the functional surface is in place. The remaining work is:
-- One missing feature (rate limit) — small
 - The testing/CI harness (e2e test, coverage gate, CI workflow) — medium
 - A posture document (`SECURITY-REVIEW.md`) — small
 - Three spec/code reconciliation decisions — small
@@ -192,12 +182,11 @@ Roughly 1-2 days of focused work to close the v1 gaps. The code itself is in goo
 
 ## Recommendations, in priority order
 
-1. **Build FR-2.6 rate limit.** Real missing requirement, small, gets a checkbox + a test.
-2. **Add `tests/e2e/test_full_flow.py`.** This is the canonical acceptance test. Spec literally names it. Even a mocked-node version is enough to satisfy the criterion.
-3. **Set up CI.** `.github/workflows/test.yml` with `pytest --cov=hermes_nodes_plugin --cov-fail-under=80`. Closes NFR-5.1 and the "passes in CI" half of v1 #5. ~20 lines of YAML.
-4. **Write `SECURITY-REVIEW.md`.** One-pager: what we checked, what we found, what's deliberately out of scope. Cross-link to `SECURITY.md` for the threat model.
-5. **Bump `pyproject.toml` to `>=3.11`.** One-line fix for NFR-4.2.
-6. **Amend REQUIREMENTS.md for the two intentional deviations** (FR-3.3 toolset name, FR-4.3 first-run behavior) so the spec matches the code. Otherwise new contributors will read the spec, write code to match it, and clash with the existing tests.
-7. (Optional, v0.2) Add a load test for NFR-2.2/2.3 — not blocking, but would actually prove the performance numbers instead of leaving them as "inferred."
+1. **Add `tests/e2e/test_full_flow.py`.** This is the canonical acceptance test. Spec literally names it. Even a mocked-node version is enough to satisfy the criterion.
+2. **Set up CI.** `.github/workflows/test.yml` with `pytest --cov=hermes_nodes_plugin --cov-fail-under=80`. Closes NFR-5.1 and the "passes in CI" half of v1 #5. ~20 lines of YAML.
+3. **Write `SECURITY-REVIEW.md`.** One-pager: what we checked, what we found, what's deliberately out of scope. Cross-link to `SECURITY.md` for the threat model.
+4. **Bump `pyproject.toml` to `>=3.11`.** One-line fix for NFR-4.2.
+5. **Amend REQUIREMENTS.md for the two intentional deviations** (FR-3.3 toolset name, FR-4.3 first-run behavior) so the spec matches the code. Otherwise new contributors will read the spec, write code to match it, and clash with the existing tests.
+6. (Optional, v0.2) Add a load test for NFR-2.2/2.3 — not blocking, but would actually prove the performance numbers instead of leaving them as "inferred."
 
 Want me to file these as a follow-up batch of cards (one per item, ordered by dependency), or work through them inline here?

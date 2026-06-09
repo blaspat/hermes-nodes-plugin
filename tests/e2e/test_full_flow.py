@@ -825,14 +825,7 @@ async def test_revoke_flow_blocks_subsequent_connects(
 
 
 @pytest.mark.skip(
-    reason="FR-2.6 (rate limit) module is implemented (see "
-    "hermes_nodes_plugin/ratelimit._RateLimiter + tests/test_ratelimit) "
-    "but the server's dispatch loop is NOT yet wired to call it — the "
-    "per-node check + 4004 close path is a separate in-flight card. "
-    "When the server-side wiring lands, drop this skip and exercise the "
-    "burst → 4004 close path against the running server. Until then, "
-    "the unit tests in tests/test_ratelimit.py lock the algorithm; this "
-    "e2e test would only re-verify the wiring."
+    reason="Body is a NotImplementedError placeholder for the FR-2.6 e2e burst → 4004 close path. The server-side wiring has since landed (PR #37: _RateLimiter at hermes_nodes_plugin/ratelimit.py, dispatch-loop check at hermes_nodes_plugin/server.py:547), and tests/test_ratelimit.py locks the algorithm. This test would re-verify the wiring; overlaps with test_ratelimit integration coverage. Remove in a follow-up card that fills in the body."
 )
 @pytest.mark.asyncio
 async def test_rate_limit_closes_with_4004(

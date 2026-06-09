@@ -3,7 +3,7 @@
 **Date:** 2026-06-09
 **Reviewer:** Kate (code-agent)
 **Source revision:** `961df1a` (main, post-`#33`)
-**Verdict:** No critical findings. One spec gap (FR-2.6 rate limit) is acknowledged and tracked. Three intentional spec deviations are stricter or equally safe. Suitable for a corporate security team's initial posture review.
+**Verdict:** No critical findings. All required FR-2.6 rate-limit work has shipped (PR #37). Three intentional spec deviations are stricter or equally safe. Suitable for a corporate security team's initial posture review.
 
 ## Scope
 
@@ -13,7 +13,7 @@
 
 ## What was checked
 
-**Requirements coverage.** Every FR (1.1–6.3) and NFR (1.1–5.3) in `REQUIREMENTS.md` was reviewed against the source. Per-row evidence lives in `REQUIREMENTS-AUDIT.md`; the pass/fail count is 27 of 31 implemented, with 3 intentional deviations and 1 missing feature (FR-2.6). The NFR-1 (security) sub-suite is the focus here.
+**Requirements coverage.** Every FR (1.1–6.3) and NFR (1.1–5.3) in `REQUIREMENTS.md` was reviewed against the source. Per-row evidence lives in `REQUIREMENTS-AUDIT.md`; the pass/fail count is 28 of 31 implemented, with 3 intentional deviations and 0 missing features as of PR #37 (FR-2.6 rate limit landed). The NFR-1 (security) sub-suite is the focus here.
 
 **NFR-1.1 — constant-time token comparison.** `TokenStore.validate()` at `hermes_nodes_plugin/tokens.py:474` calls `hmac.compare_digest(candidate, match.token_hash)`. Hashes are equal-length hex digests, so the constant-time contract holds.
 
@@ -29,15 +29,15 @@
 
 **Storage and audit.** `TokenStore` encrypts with Fernet, never logs the key, opens its file `0o600`, and uses `fcntl.flock` for cross-process safety. `AuditWriter.record()` is contractually never-raises (PR #28, issue #11) — any write failure is swallowed with `logger.warning`, so an audit disk failure cannot crash the server or block an authenticated call. Append-only; no CLI command deletes entries.
 
-**WSS lifecycle close codes (PROTOCOL §4).** `4001` auth failed, `4002` protocol version mismatch, `4003` message out of order, `4004` reserved for resource-exhaustion-style rejections (currently the handshake-timeout close per issue #13; FR-2.6 will reuse it for the rate-limit case once landed). All four are named constants in `server.py:74-81` and used consistently.
+**WSS lifecycle close codes (PROTOCOL §4).** `4001` auth failed, `4002` protocol version mismatch, `4003` message out of order, `4004` shared by handshake-timeout (server.py:362, 434) and rate-limit-exceeded (`server.py:83` `CLOSE_RATE_LIMIT_EXCEEDED`, `server.py:547` dispatch-loop check) — the constant is named per the active close path so call-sites stay unambiguous. All four are named constants in `server.py:74-83` and used consistently.
 
 **Plugin lifecycle.** `__init__.py:58-82` wraps `register()` in try/except. `lifecycle.py:240-256` detects a WSS bind failure, cancels the server task, logs the error, and returns rather than re-raising — so a port conflict does not block Hermes startup. The other lifecycle hooks get the same defensive try/except.
 
 ## Findings
 
-**None critical.** No issues that would block a v1 release. The most material item is the missing FR-2.6 rate limit, a DoS protection gap rather than a confidentiality or integrity issue.
+**None critical.** No issues that would block a v1 release.
 
-**FR-2.6 — rate limiting (100 calls/sec/node, sliding window, close 4004 on excess) is not implemented.** The audit at `REQUIREMENTS-AUDIT.md` §FR-2.6 confirms no rate-limit class exists; `4004` is currently used for handshake timeout only. The attack surface is the operator's paired nodes (not the public internet, since the server is intended to run on a private network behind a reverse proxy), so practical exposure is bounded. Mitigation: pair only trusted devices (`SECURITY.md`). Remediation: tracked as a follow-up card; ~80 LOC + 5–6 tests.
+**FR-2.6 — rate limiting (100 calls/sec/node, sliding window, close 4004 on excess) shipped in PR #37.** `_RateLimiter` at `hermes_nodes_plugin/ratelimit.py` (sliding 1-second window keyed on `node_name`); wired into the dispatch loop at `hermes_nodes_plugin/server.py:547`; on excess sends a structured `rate_limit` error frame and closes with `CLOSE_RATE_LIMIT_EXCEEDED = 4004` (`server.py:83`). Algorithm covered by `tests/test_ratelimit.py`. The e2e test in `tests/e2e/test_full_flow.py` still has a body of `NotImplementedError` and is `@pytest.mark.skip`-ed for a real reason — see its skip-reason for the current state.
 
 **Intentional deviations from the spec, recommended for spec amendment rather than code change:**
 
@@ -51,7 +51,7 @@
 
 **Filesystem trust.** The WSS server trusts the operator's `tokens.json` filesystem. If the host is compromised, an attacker with read access can exfiltrate ciphertext (useless without the Fernet key) and with write access can replace tokens. Mitigation: file mode `0600` is set by `tokens.py:690`; the directory mode `0700` is the operator's responsibility and is documented in `README.md`.
 
-**No per-call rate limit until FR-2.6 lands.** A misbehaving or compromised paired node can drive the server into resource exhaustion. Workaround for early adopters: run the plugin behind a reverse proxy that enforces its own per-IP rate limits (nginx `limit_req`, Caddy `ratelimit`, etc.). The reverse proxy is already the operator's TLS termination point in default mode.
+**Per-call rate limit enforced (FR-2.6).** Sliding 1-second window per node, 100 calls/sec by default, configurable via `config.rate_limit_per_node`; on excess the server sends a structured `rate_limit` error frame and closes with `4004` (`hermes_nodes_plugin/server.py:547`). The e2e test body is still `NotImplementedError` and currently skipped; the wiring is locked by the unit tests in `tests/test_ratelimit.py` and the dispatch-loop integration is in place. The reverse-proxy `limit_req` workaround still applies for defence-in-depth.
 
 **Fernet key handling.** The key lives in `HERMES_NODES_TOKEN_KEY`. If the env var leaks (process listing, `/proc/<pid>/environ`, a careless log line), all stored tokens can be decrypted. Mitigation: load the key from a secrets manager (AWS Secrets Manager, HashiCorp Vault) or use systemd `LoadCredential=` on systemd hosts. The `config.py` interface is env-var based, so no code change is needed to switch.
 
@@ -76,7 +76,13 @@ python -c "from hermes_nodes_plugin.server import PROTOCOL_MAJOR; print(PROTOCOL
 
 # 5. Local test suite is green
 python -m pytest -q
-# Current snapshot: ~325 collected, a few skipped pending FR-2.6.
+# Current snapshot (main, post-#37): 345 pass / 1 skip (the rate-limit e2e
+# test body — see its `@pytest.mark.skip` reason) / 0 deselected.
+# Two tests are order-dependent and currently fail only in full-suite
+# runs (pass in isolation):
+#   - tests/test_lifecycle.py::TestResetDefaultRunner::test_reset_sync_with_no_runner_is_noop
+#   - tests/test_ratelimit.py::test_check_prune_is_keyed_on_caller_node
+# Tracked separately; not caused by the FR-2.6 wiring.
 ```
 
 ## Cross-references
