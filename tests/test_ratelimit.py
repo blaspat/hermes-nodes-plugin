@@ -217,6 +217,143 @@ def test_check_per_node_independent_windows() -> None:
     assert limiter.check("node-a") is True
 
 
+def test_check_prunes_empty_deque_after_window_ages_out() -> None:
+    """A node whose deque empties must not leave a lingering empty entry.
+
+    Regression test for the W2 finding from Quinn's review of
+    t_c9cf21f0: ``_windows`` previously held empty deques for
+    nodes whose last timestamp had aged out, until either the
+    same node called again or ``reset()`` ran. With the prune
+    step in ``check()``, the dict only contains nodes that have
+    at least one timestamp inside the current window.
+
+    The pre-fix code would still hold a ``deque()`` for
+    ``node_a`` after the quiet period; the post-fix code
+    deletes the key entirely on the first call after the window
+    empties, then re-inserts a fresh deque. We assert the
+    internal dict state directly so the test would fail loudly
+    on the pre-fix code (where the deque, though length 1, is
+    a different object than a freshly-allocated one).
+    """
+    # 5 calls at t=0.0..0.4 fill node_a's window, then the
+    # clock jumps to t=2.0 (well past the 1.0s window) for the
+    # next check on node_a. We hold on the reference to the
+    # pre-quiet deque so we can prove the post-quiet deque is
+    # a fresh one.
+    clock = _FakeClock(0.0, 0.1, 0.2, 0.3, 0.4, 2.0, 0.0)
+    limiter = _RateLimiter(max_calls=5, window_seconds=1.0, clock=clock)
+
+    for _ in range(5):
+        assert limiter.check("node_a") is True
+    pre_quiet_deque = limiter._windows["node_a"]
+    assert len(pre_quiet_deque) == 5
+
+    # Quiet period: clock advances past the window. The next
+    # check on node_a evicts all 5 timestamps; the prune step
+    # drops the key entirely, then inserts a fresh deque.
+    assert limiter.check("node_a") is True
+    post_quiet_deque = limiter._windows["node_a"]
+
+    # Fresh deque object — the prune step in check() removes
+    # the key before re-inserting, so the post-quiet deque is
+    # NOT the same object as the pre-quiet one. (The pre-fix
+    # code mutates the existing deque in place, so this
+    # identity check fails loudly.)
+    assert post_quiet_deque is not pre_quiet_deque
+    assert len(post_quiet_deque) == 1
+    assert limiter.snapshot("node_a") == (2.0,)
+
+    # And the public read-back: the node is still tracked,
+    # with a single entry.
+    assert limiter.tracked_nodes() == {"node_a"}
+
+
+def test_check_prune_is_keyed_on_caller_node() -> None:
+    """The prune in ``check()`` is keyed on the caller, not a global sweep.
+
+    Important behavioural contract: a ``check("node_b")`` call
+    does NOT prune an empty deque left behind by a different
+    node ``node_a``. The prune fires only when the matching
+    node's deque goes empty on its own check. This is what
+    keeps ``check()`` O(1)-ish (a single dict lookup, single
+    deque eviction) — a global sweep would make the hot path
+    linear in the number of tracked nodes.
+
+    Drives node_a into a quiet state, then verifies that
+    subsequent ``check("node_b")`` calls leave ``node_a``'s
+    deque in place (3 timestamps, no eviction). A later
+    ``check("node_a")`` call evicts those timestamps, triggers
+    the prune, and inserts a fresh deque — and the deque
+    object is a *different* one from the pre-prune deque,
+    proving the prune ran.
+    """
+    clock = _FakeClock(0.0, 0.0, 0.0, 0.0, 0.0)
+    limiter = _RateLimiter(max_calls=3, window_seconds=1.0, clock=clock)
+    # node_a: 3 calls at t=0.0
+    for _ in range(3):
+        assert limiter.check("node_a") is True
+    # node_b: 1 call at t=0.0
+    assert limiter.check("node_b") is True
+    assert set(limiter._windows) == {"node_a", "node_b"}
+    pre_a = limiter._windows["node_a"]
+    assert len(pre_a) == 3
+
+    # Fast-forward past the 1.0s window. check("node_b") at
+    # t=2.0 ages out node_b's old call and reaps it. node_a's
+    # deque is NOT touched (the prune is keyed on the caller),
+    # so its 3 timestamps from t=0.0 are still in place.
+    clock.set(2.0, 2.0)
+    assert limiter.check("node_b") is True
+    assert "node_b" in limiter._windows
+    assert len(limiter._windows["node_b"]) == 1
+    # node_a's deque is exactly the same object it was before
+    # — the prune is caller-keyed, not a global sweep.
+    assert limiter._windows["node_a"] is pre_a
+    assert len(limiter._windows["node_a"]) == 3
+
+    # NOW drive the prune for node_a. A check("node_a") at
+    # t=3.0 evicts all 3 timestamps, triggers the prune
+    # (deletes the key), and inserts a fresh deque of
+    # length 1. The new deque is a *different* object from
+    # the one that just got pruned.
+    clock.set(3.0)
+    assert limiter.check("node_a") is True
+    assert limiter._windows["node_a"] is not pre_a
+    assert len(limiter._windows["node_a"]) == 1
+
+
+def test_check_recreate_fresh_deque_after_full_age_out() -> None:
+    """After every entry ages out, the deque is a fresh one, not a carry-over.
+
+    Stronger companion to the test above. Drives two nodes
+    through a quiet period, then asserts each ``_windows``
+    entry is a *different object* from the pre-quiet deque —
+    not the in-place mutation that the pre-fix code produced.
+    The deque is length 1 (the just-appended timestamp) and
+    not the same object as the pre-quiet deque. This locks in
+    the "O(active_nodes * max_calls) at worst" claim in the
+    module's docstring.
+    """
+    clock = _FakeClock(0.0, 0.0, 2.0, 2.0)
+    limiter = _RateLimiter(max_calls=1, window_seconds=1.0, clock=clock)
+    assert limiter.check("node_a") is True
+    assert limiter.check("node_b") is True
+    pre_a = limiter._windows["node_a"]
+    pre_b = limiter._windows["node_b"]
+    assert set(limiter._windows) == {"node_a", "node_b"}
+
+    # Both windows age out at t=2.0. The prune step drops the
+    # key entirely before re-inserting, so the post-quiet
+    # deques are different objects — not the in-place mutated
+    # deques the pre-fix code would have produced.
+    assert limiter.check("node_a") is True
+    assert limiter.check("node_b") is True
+
+    assert limiter._windows["node_a"] is not pre_a
+    assert limiter._windows["node_b"] is not pre_b
+    assert all(len(dq) == 1 for dq in limiter._windows.values())
+
+
 def test_check_unrelated_node_does_not_register() -> None:
     """Fail-open path must not grow the internal dict.
 

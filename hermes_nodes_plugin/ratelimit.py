@@ -92,7 +92,10 @@ class _RateLimiter:
         self._clock: ClockFn = clock if clock is not None else time.monotonic
         # node_name -> deque[float] of recent call timestamps.
         # Bounded by ``max_calls`` per node (we never append past
-        # the cap), so memory is O(nodes * max_calls) at worst.
+        # the cap). Entries are pruned by ``check()`` whenever a
+        # node's deque empties, so memory is O(active_nodes *
+        # max_calls) at worst — an "active" node is one with at
+        # least one call inside the current window.
         self._windows: dict[str, Deque[float]] = {}
 
         if self._max_calls <= 0:
@@ -155,14 +158,23 @@ class _RateLimiter:
         now = self._clock()
         cutoff = now - self._window_seconds
         window = self._windows.get(node_name)
+        if window is not None:
+            # Evict expired timestamps. ``popleft`` is O(1) on a
+            # deque and stops as soon as we see a timestamp
+            # in-window.
+            while window and window[0] <= cutoff:
+                window.popleft()
+            if not window:
+                # All entries aged out. Drop the key so the dict
+                # doesn't accumulate empty deques for nodes that
+                # have gone quiet; the next call recreates a
+                # fresh deque. This is what keeps the memory
+                # bound on the comment above honest.
+                del self._windows[node_name]
+                window = None
         if window is None:
             window = deque()
             self._windows[node_name] = window
-
-        # Evict expired timestamps. ``popleft`` is O(1) on a deque
-        # and stops as soon as we see a timestamp in-window.
-        while window and window[0] <= cutoff:
-            window.popleft()
 
         if len(window) >= self._max_calls:
             # Cap hit. Do not record the rejected call — counting
