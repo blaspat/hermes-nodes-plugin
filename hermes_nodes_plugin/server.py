@@ -65,6 +65,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from hermes_nodes_plugin.config import NodeServerConfig
 from hermes_nodes_plugin.errors import TokenStoreError
+from hermes_nodes_plugin.ratelimit import _RateLimiter
 from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
 from hermes_nodes_plugin.tokens import TokenStore, token_store_from_config
 
@@ -74,10 +75,12 @@ logger = logging.getLogger(__name__)
 CLOSE_AUTH_FAILED = 4001
 CLOSE_PROTOCOL_VERSION = 4002
 CLOSE_MESSAGE_OUT_OF_ORDER = 4003
-# 4004 is "Rate limit exceeded" in PROTOCOL §4. We reuse it for the
-# handshake-timeout close (issue #13): a client that opens the WSS
-# and parks the connection is effectively exhausting server
-# resources, which is what the rate-limit code is for.
+# 4004 is "Rate limit exceeded" in PROTOCOL §4. The handshake-timeout
+# close (issue #13) reuses this code on the rationale that a
+# parked connection is itself a form of resource exhaustion; a
+# FR-2.6 burst that crosses the 100-cps cap is the more direct
+# trigger and produces a structured ``rate_limit`` error frame.
+CLOSE_RATE_LIMIT_EXCEEDED = 4004
 CLOSE_HANDSHAKE_TIMEOUT = 4004
 
 # Field caps for Pydantic models (issue #14, DoS hardening).
@@ -237,6 +240,26 @@ def _build_auth_err(reason: str, code: int) -> dict[str, Any]:
     return {"type": "auth_err", "reason": reason, "code": code}
 
 
+def _build_rate_limit_err(
+    *, node_name: str, limit_per_second: int
+) -> dict[str, Any]:
+    """Build the structured ``rate_limit`` error frame (FR-2.6).
+
+    Sent before the close-4004 so the client surfaces a useful
+    reason rather than just seeing the socket drop. The frame
+    shape mirrors the other error envelopes (``type``/``reason``/
+    ``code``) and adds ``node_name`` + ``limit_per_second`` so
+    the node operator can correlate the drop with their config.
+    """
+    return {
+        "type": "rate_limit",
+        "reason": "rate_limit_exceeded",
+        "code": CLOSE_RATE_LIMIT_EXCEEDED,
+        "node_name": node_name,
+        "limit_per_second": limit_per_second,
+    }
+
+
 def _now_rfc3339_ms() -> str:
     """UTC RFC 3339 timestamp with millisecond precision.
 
@@ -253,6 +276,7 @@ def create_app(
     token_store: TokenStore | None = None,
     registry: NodeRegistry | None = None,
     config: NodeServerConfig | None = None,
+    rate_limiter: _RateLimiter | None = None,
 ) -> FastAPI:
     """Build a FastAPI app for the WSS node server.
 
@@ -268,7 +292,14 @@ def create_app(
             client disconnects.
         config: Server config. Only consulted when ``token_store`` is
             not provided — used to read the Fernet key env var name
-            and the token store path.
+            and the token store path. Also seeds the rate limiter
+            cap (``config.rate_limit_per_node``) when
+            ``rate_limiter`` is not injected.
+        rate_limiter: Per-node sliding-window rate limiter (FR-2.6).
+            Defaults to a fresh :class:`_RateLimiter` constructed
+            with ``config.rate_limit_per_node``. Tests inject a
+            low-cap instance to exercise the close-on-excess path
+            with only a few round-trips.
 
     Returns:
         A :class:`fastapi.FastAPI` with the ``/ws/nodes`` WebSocket
@@ -288,11 +319,17 @@ def create_app(
         # (REQUIREMENTS FR-4.2). Tests always pass ``token_store``
         # explicitly so they don't need a real key.
         token_store = token_store_from_config(config)
+    if rate_limiter is None:
+        # FR-2.6: cap defaults to config.rate_limit_per_node (100).
+        # A misconfigured ``<= 0`` value makes the limiter fail-open
+        # and log a warning at construction (see ``ratelimit.py``).
+        rate_limiter = _RateLimiter(max_calls=config.rate_limit_per_node)
 
     app = FastAPI(title="hermes-nodes WSS server")
     app.state.token_store = token_store
     app.state.registry = registry
     app.state.config = config
+    app.state.rate_limiter = rate_limiter
 
     @app.websocket("/ws/nodes")
     async def ws_nodes(websocket: WebSocket) -> None:
@@ -497,6 +534,30 @@ def create_app(
                 # We await this so the registry's lock isn't held
                 # longer than necessary, but it's cheap.
                 await registry.touch_heartbeat(auth.node_name)
+                # FR-2.6 sliding-window rate limit, applied *after*
+                # the handshake (we know ``auth.node_name``) and
+                # *before* the action handler dispatches the
+                # message. A burst that crosses the cap is dropped
+                # with a structured ``rate_limit`` error frame and
+                # close 4004. We check the limiter AFTER touching
+                # the heartbeat so a healthy node's "I'm alive"
+                # traffic is still counted even when a misbehaving
+                # sibling is being throttled — but the rejected
+                # call itself is NOT routed to the action handler.
+                if not rate_limiter.check(auth.node_name):
+                    logger.warning(
+                        "rate limit exceeded for node %r; closing 4004",
+                        auth.node_name,
+                    )
+                    await _send_json_safe(
+                        websocket,
+                        _build_rate_limit_err(
+                            node_name=auth.node_name,
+                            limit_per_second=rate_limiter.max_calls,
+                        ),
+                    )
+                    await _safe_close(websocket, CLOSE_RATE_LIMIT_EXCEEDED)
+                    return
                 await _route_inbound(registry, auth.node_name, raw)
         except WebSocketDisconnect:
             pass
@@ -692,5 +753,6 @@ __all__ = [
     "CLOSE_AUTH_FAILED",
     "CLOSE_PROTOCOL_VERSION",
     "CLOSE_MESSAGE_OUT_OF_ORDER",
+    "CLOSE_RATE_LIMIT_EXCEEDED",
     "PROTOCOL_MAJOR",
 ]
