@@ -252,6 +252,7 @@ def _build_rate_limit_err(
     ``code``) and adds ``node_name`` + ``limit_per_second`` so
     the node operator can correlate the drop with their config.
     """
+    # See PROTOCOL.md "Server-originated frames: rate_limit" — keep the Go client in sync.
     return {
         "type": "rate_limit",
         "reason": "rate_limit_exceeded",
