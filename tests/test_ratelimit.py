@@ -475,8 +475,24 @@ def registry() -> NodeRegistry:
 
 @pytest.fixture
 def low_cap_limiter() -> _RateLimiter:
-    """A 3-cps cap so the boundary test sends 4 messages, not 101."""
-    return _RateLimiter(max_calls=3, window_seconds=1.0)
+    """A 3-cps cap so the boundary test sends 4 messages, not 101.
+
+    The clock is a :class:`_FakeClock` with timestamps all inside
+    the same 1s window. Without a fake clock, a stalled CI runner
+    could age out the window between the 3rd and 4th send and the
+    boundary test would fail spuriously. The fixture is shared by
+    tests that make different numbers of calls (the close-path
+    test sends 4 pongs; the per-node test sends 8 across two
+    nodes), so the clock is provisioned with enough ticks to
+    cover the busiest case (16 — well over what the 8-call test
+    needs, with all timestamps inside the 1s window so the rate
+    limit still fires on the 4th call).
+    """
+    return _RateLimiter(
+        max_calls=3,
+        window_seconds=1.0,
+        clock=_FakeClock(*[round(0.01 * i, 3) for i in range(16)]),
+    )
 
 
 @pytest.fixture
@@ -691,3 +707,53 @@ def test_create_app_uses_config_rate_limit_when_no_limiter_given(
         config=cfg,
     )
     assert app.state.rate_limiter.max_calls == 50
+
+
+def test_create_app_injects_clock_into_default_limiter(
+    tmp_path,
+    fernet_key: str,
+) -> None:
+    """``create_app(clock=...)`` threads the clock into the default limiter.
+
+    When no ``rate_limiter`` is injected, the factory builds one
+    from ``config.rate_limit_per_node`` and the ``clock`` parameter.
+    A custom clock should be observable on the resulting limiter's
+    recorded timestamps, so the integration tests can drive the
+    sliding window deterministically. Default behaviour (no clock
+    injected) keeps the real ``time.monotonic``.
+    """
+    cfg = NodeServerConfig(rate_limit_per_node=3)
+    store = TokenStore(path=tmp_path / "tokens.json", key=fernet_key)
+
+    # 1. Custom clock is observable: the limiter's stored timestamps
+    #    come from the fake clock, not from time.monotonic().
+    fake = _FakeClock(0.0, 0.1, 0.2, 0.3)
+    app = create_app(
+        token_store=store,
+        registry=NodeRegistry(),
+        config=cfg,
+        clock=fake,
+    )
+    limiter = app.state.rate_limiter
+    assert isinstance(limiter, _RateLimiter)
+    # 3 allowed calls consume 3 ticks from the fake clock. The
+    # 4th tick stays in reserve. The recorded window contains
+    # exactly those 3 fake-clock timestamps — proof that the seam
+    # is plumbed all the way from ``create_app(clock=...)`` through
+    # to ``_RateLimiter.check``.
+    assert limiter.check("node-a") is True
+    assert limiter.check("node-a") is True
+    assert limiter.check("node-a") is True
+    assert limiter.snapshot("node-a") == (0.0, 0.1, 0.2)
+
+    # 2. Default clock is real time.monotonic. We don't measure it
+    #    (that would be flaky); we just assert the parameter is
+    #    optional and the construction path doesn't blow up.
+    app2 = create_app(
+        token_store=store,
+        registry=NodeRegistry(),
+        config=cfg,
+    )
+    limiter2 = app2.state.rate_limiter
+    assert isinstance(limiter2, _RateLimiter)
+    assert limiter2.max_calls == 3
