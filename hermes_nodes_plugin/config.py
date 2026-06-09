@@ -42,6 +42,19 @@ prefix and lowercased):
     — how often the runner's background sweep checks the
     registry for stale connections. Must be ``> 0``. Override
     with ``HERMES_NODES_HEARTBEAT_SWEEP_INTERVAL_SECONDS``.
+  * ``rate_limit_per_node`` (int)   default ``100``
+    — FR-2.6: max calls/second per node the WSS server will
+    accept from a single connected node before closing with
+    code 4004 ("Rate limit exceeded" in PROTOCOL §4). The
+    limiter is a sliding 1-second window keyed on
+    ``node_name``; a node that bursts past the cap is dropped
+    with a structured ``rate_limit`` error frame. ``<= 0``
+    disables the limiter (fail-open; the limiter logs a warning
+    at construction so a typo'd ``=0`` is visible). A
+    non-integer value is a config error. Override with
+    ``HERMES_NODES_RATE_LIMIT`` (the env-var name is the spec
+    literal; the dataclass field uses the longer name for
+    clarity at call sites).
 
 Type coercion rules (applied uniformly to env and file values):
 
@@ -127,6 +140,19 @@ class NodeServerConfig:
     # faster cleanup of dead nodes; higher means less registry
     # churn. Must be ``> 0``. See issue #19.
     heartbeat_sweep_interval_seconds: int = 30
+
+    # FR-2.6 per-node sliding-window rate limit. A node whose
+    # inbound call count within a 1-second window exceeds this
+    # cap gets a ``rate_limit`` error frame and the WSS is closed
+    # with 4004. The dispatcher reads this once at app
+    # construction; the cap is in-process and resets on server
+    # boot. ``<= 0`` disables the limiter (fail-open; the
+    # limiter itself logs the disable). The dataclass does NOT
+    # raise on ``<= 0`` because ``rate_limit_per_node=0`` is a
+    # legitimate "unlimited" operator choice. Env var:
+    # ``HERMES_NODES_RATE_LIMIT`` (spec-literal, NOT derived
+    # from the field name).
+    rate_limit_per_node: int = 100
 
     def __post_init__(self) -> None:
         # TLS partial-config is the most common deployment footgun: an
@@ -409,6 +435,35 @@ def _build(
                 f"got {sweep_interval}"
             )
 
+    # -- rate limit per node (int, FR-2.6) --------------------------------
+    # Spec literal env-var name ``HERMES_NODES_RATE_LIMIT`` (NOT
+    # derived from the dataclass field name ``rate_limit_per_node``).
+    # ``<= 0`` is a legitimate "unlimited" operator choice and is
+    # not a config error — the limiter logs a warning at construction.
+    rate_limit_raw: Any = None
+    rate_limit_source = "default"
+    if env.get("HERMES_NODES_RATE_LIMIT") is not None:
+        rate_limit_raw = env["HERMES_NODES_RATE_LIMIT"]
+        rate_limit_source = "env"
+    elif _read_file_value(file_data, "rate_limit_per_node") is not None:
+        rate_limit_raw = _read_file_value(file_data, "rate_limit_per_node")
+        rate_limit_source = "file"
+    rate_limit: int | None = None
+    if rate_limit_raw is not None:
+        # Empty string from the env (e.g. ``export HERMES_NODES_RATE_LIMIT=``)
+        # falls through to the default. Some shells normalise unset vars
+        # this way and the operator clearly didn't intend to set a value.
+        if isinstance(rate_limit_raw, str) and rate_limit_raw.strip() == "":
+            rate_limit = None
+        else:
+            try:
+                rate_limit = int(rate_limit_raw)
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(
+                    f"{rate_limit_source}: rate_limit_per_node must be an integer, "
+                    f"got {rate_limit_raw!r}"
+                ) from exc
+
     # Now assemble. We use a partial dict + NodeServerConfig defaults for
     # any key we didn't resolve — dataclass handles the "default" leg of
     # the precedence chain.
@@ -436,6 +491,8 @@ def _build(
         resolved["heartbeat_stale_seconds"] = heartbeat_stale
     if sweep_interval is not None:
         resolved["heartbeat_sweep_interval_seconds"] = sweep_interval
+    if rate_limit is not None:
+        resolved["rate_limit_per_node"] = rate_limit
 
     return NodeServerConfig(**resolved)
 
