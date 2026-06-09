@@ -56,9 +56,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -277,6 +278,7 @@ def create_app(
     registry: NodeRegistry | None = None,
     config: NodeServerConfig | None = None,
     rate_limiter: _RateLimiter | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> FastAPI:
     """Build a FastAPI app for the WSS node server.
 
@@ -300,6 +302,11 @@ def create_app(
             with ``config.rate_limit_per_node``. Tests inject a
             low-cap instance to exercise the close-on-excess path
             with only a few round-trips.
+        clock: Monotonic-clock callable threaded into the default
+            :class:`_RateLimiter` so the integration tests can drive
+            the rate-limit window from a fake clock and avoid
+            real-time flakiness on slow CI runners. Ignored when
+            ``rate_limiter`` is injected.
 
     Returns:
         A :class:`fastapi.FastAPI` with the ``/ws/nodes`` WebSocket
@@ -323,7 +330,13 @@ def create_app(
         # FR-2.6: cap defaults to config.rate_limit_per_node (100).
         # A misconfigured ``<= 0`` value makes the limiter fail-open
         # and log a warning at construction (see ``ratelimit.py``).
-        rate_limiter = _RateLimiter(max_calls=config.rate_limit_per_node)
+        # The ``clock`` seam is plumbed from the factory parameter
+        # so integration tests can drive the window with a fake
+        # clock and stay deterministic on slow CI runners.
+        rate_limiter = _RateLimiter(
+            max_calls=config.rate_limit_per_node,
+            clock=clock,
+        )
 
     app = FastAPI(title="hermes-nodes WSS server")
     app.state.token_store = token_store
