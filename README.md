@@ -28,7 +28,25 @@ The agent then becomes a single point of control over a fleet of headless machin
 
 The plugin auto-loads via Hermes's `hermes_agent.plugins` entry-point group — no config file changes needed once the package is installed.
 
-From GitHub (recommended during v0.x):
+### Option 1 — from a release (once v0.x is cut)
+
+```bash
+# Activate the Hermes profile's venv first
+source ~/.hermes/profiles/<name>/venv/bin/activate
+
+# Install a pinned version (replace with the latest tag)
+pip install hermes-nodes-plugin==0.1.0
+# or, with uv:
+# uv pip install hermes-nodes-plugin==0.1.0
+```
+
+This is the recommended path once a release exists — you get a pinned, reproducible install and `pip` can resolve dependency conflicts against the rest of your profile cleanly.
+
+### Option 2 — from source (current path during v0.x; only option until a release is cut)
+
+The plugin has no GitHub releases yet, so this is the only way to install it today. Pick one of the two variants:
+
+**From GitHub (recommended during v0.x):**
 
 ```bash
 # Activate the Hermes profile's venv first
@@ -38,7 +56,7 @@ source ~/.hermes/profiles/<name>/venv/bin/activate
 pip install -e git+https://github.com/blaspat/hermes-nodes-plugin.git#egg=hermes-nodes-plugin
 ```
 
-Or from a local clone:
+**Or from a local clone (if you want to inspect / modify the code):**
 
 ```bash
 git clone https://github.com/blaspat/hermes-nodes-plugin.git
@@ -46,7 +64,7 @@ cd hermes-nodes-plugin
 pip install -e .
 ```
 
-Verify the install landed:
+### Verify the install
 
 ```bash
 hermes --help | grep "node "
@@ -249,7 +267,6 @@ The pairing flow generates a one-time token that is hashed (Fernet) at rest. See
 
 - **[hermes-nodes](https://github.com/blaspat/hermes-nodes)** — the Go node binary (the "arm")
 - **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — the agent framework this plugs into
-- **[OpenClaw](https://docs.openclaw.ai/nodes)** — the design pattern this is inspired by (different protocol, different ecosystem)
 
 ## License
 
