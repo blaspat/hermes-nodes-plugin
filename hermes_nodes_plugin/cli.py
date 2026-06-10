@@ -527,16 +527,13 @@ def _connected_names() -> set[str]:
     ``disconnected`` / ``never_seen`` for every row.
     """
     try:
-        from hermes_nodes_plugin.lifecycle import get_default_runner
+        from hermes_nodes_plugin.lifecycle import _default_runner
     except Exception:
         return set()
 
-    try:
-        runner = get_default_runner()
-    except (ConfigError, TokenStoreError):
-        # Fresh install: no config / no Fernet key. The store path
-        # may still have records (a previous install left them);
-        # we just can't tell which are live, so report none.
+    runner = _default_runner
+    if runner is None:
+        # Server hasn't been started yet — no live connections.
         return set()
 
     registry = getattr(runner, "_registry", None)
@@ -573,13 +570,12 @@ def _close_active_connection(name: str) -> None:
     waiting for the next heartbeat timeout.
     """
     try:
-        from hermes_nodes_plugin.lifecycle import get_default_runner
+        from hermes_nodes_plugin.lifecycle import _default_runner
     except Exception:
         return
 
-    try:
-        runner = get_default_runner()
-    except (ConfigError, TokenStoreError):
+    runner = _default_runner
+    if runner is None:
         return
 
     registry = getattr(runner, "_registry", None)

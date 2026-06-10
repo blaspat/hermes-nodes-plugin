@@ -137,3 +137,57 @@ def register(ctx) -> None:
             )
     except Exception as exc:
         log.warning("hermes-nodes-plugin: tool registration failed: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # 4. Auto-start the WSS server                                         #
+    # ------------------------------------------------------------------ #
+    # Bring up the node server in a background daemon thread so it's
+    # ready before the first user message. The thread runs its own event
+    # loop so uvicorn can bind the port and stay alive. Any startup
+    # error is logged but does not block plugin registration.
+    #
+    # Disabled in test/CI environments by setting the env var to ``0``.
+
+    import os
+
+    if os.environ.get("HERMES_NODES_AUTO_START", "1") == "1":
+
+        def _start_server() -> None:
+            import asyncio
+            import contextlib
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                with contextlib.suppress(Exception):
+                    from hermes_nodes_plugin.lifecycle import _on_session_start
+
+                    loop.run_until_complete(_on_session_start())
+                    log.info(
+                        "hermes-nodes-plugin: WSS server started on port 6969"
+                        " (background thread)",
+                    )
+                # Keep the loop alive so uvicorn tasks continue running.
+                loop.run_forever()
+            except Exception as exc:
+                log.warning(
+                    "hermes-nodes-plugin: server background thread failed: %s", exc
+                )
+            finally:
+                loop.close()
+
+        try:
+            import threading
+
+            t = threading.Thread(
+                target=_start_server, daemon=True, name="hermes-nodes-wss"
+            )
+            t.start()
+        except Exception as exc:
+            log.warning(
+                "hermes-nodes-plugin: could not start server thread: %s", exc
+            )
+    else:
+        log.debug(
+            "hermes-nodes-plugin: auto-start disabled (HERMES_NODES_AUTO_START=0)"
+        )

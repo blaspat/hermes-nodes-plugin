@@ -117,21 +117,14 @@ class ServerRunner:
         token_store: TokenStore,
         registry: NodeRegistry,
     ) -> None:
-        # ``create_app`` (and via it, the FastAPI app / pydantic /
-        # uvicorn stack) is only needed at the point we actually
-        # build the ASGI application. We import it lazily so this
-        # module can be imported — and ``ServerRunner`` constructed
-        # in tests that mock the app — without the heavy deps.
-        from hermes_nodes_plugin.server import create_app
-
+        # The FastAPI app / pydantic / uvicorn stack is built lazily
+        # in :meth:`start` so constructing a ServerRunner is cheap.
+        # This keeps CLI subcommands (which only check ``_registry``)
+        # from triggering the fastapi import chain.
         self._config = config
         self._token_store = token_store
         self._registry = registry
-        self._app = create_app(
-            token_store=token_store,
-            registry=registry,
-            config=config,
-        )
+        self._app: object | None = None  # Built on first start()
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         # Background sweep task (issue #19) — calls
@@ -181,6 +174,18 @@ class ServerRunner:
             logger.debug("hermes-nodes server already running; start() is a no-op")
             return
 
+        # Build the FastAPI app lazily on first start. ``create_app``
+        # imports fastapi/pydantic/uvicorn, so we defer it to the
+        # point where we actually need the ASGI stack.
+        if self._app is None:
+            from hermes_nodes_plugin.server import create_app
+
+            self._app = create_app(
+                token_store=self._token_store,
+                registry=self._registry,
+                config=self._config,
+            )
+
         # uvicorn is only needed when we actually start the server;
         # import it lazily so module import stays free of the heavy
         # ASGI / native-extension stack.
@@ -204,7 +209,7 @@ class ServerRunner:
         # lifespan object *before* calling ``startup``; the property
         # is only available after ``Config.load()`` returns.
         uvicorn_config = uvicorn.Config(
-            self._app,
+            self._app,  # type: ignore[arg-type]
             host=self._config.host,
             port=self._config.port,
             log_level="warning",
