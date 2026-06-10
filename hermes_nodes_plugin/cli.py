@@ -717,6 +717,20 @@ def _close_active_connection_strict(
         # treat the same as "could not reach the registry".
         return CLOSE_RESULT_ERROR
 
+def main() -> None:
+    """Standalone entrypoint for the ``hermes-node`` script.
+
+    Wired via ``[project.scripts] hermes-node = hermes_nodes_plugin.cli:main``
+    in pyproject.toml so operators can run ``hermes-node pair --name x``
+    without needing ``hermes node`` CLI support from the host.
+    """
+    parser = argparse.ArgumentParser(
+        prog="hermes-node",
+        description="Manage paired hermes-nodes (WSS node server).",
+    )
+    setup_node_cli(parser)
+    args = parser.parse_args()
+    sys.exit(node_command(args) or 0)
 
 __all__ = [
     "setup_node_cli",

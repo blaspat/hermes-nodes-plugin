@@ -1,6 +1,6 @@
 """hermes-nodes-plugin: Hermes Agent plugin for remote node control.
 
-Pairs with the ``hermes-nodes`` Go binary. The plugin turns Kate (or any
+Pairs with the ``hermes-nodes`` Go binary. The plugin turns Agent (or any
 Hermes agent) into a "brain" that can exec / read / write on paired
 remote nodes over an authenticated WSS connection.
 
@@ -47,7 +47,7 @@ def register(ctx) -> None:
       ``hermes node status`` via ``ctx.register_cli_command``
       (Task 2.10). Guarded separately so a missing or broken CLI
       registration cannot block tool registration.
-    * **Kate tools** (Task 2.8) — registers ``node_exec``,
+    * **Agent tools** (Task 2.8) — registers ``node_exec``,
       ``node_read``, ``node_write``, ``node_list`` via
       ``ctx.register_tool``. The tool bodies live in
       :mod:`hermes_nodes_plugin.tools`; this file just hands them
@@ -130,7 +130,7 @@ def register(ctx) -> None:
         log.warning("hermes-nodes-plugin: CLI registration failed: %s", exc)
 
     # ------------------------------------------------------------------ #
-    # 3. Kate tools                                                        #
+    # 3. Agent tools                                                        #
     # ------------------------------------------------------------------ #
     # tools.py is stdlib-only so we import it eagerly without dragging
     # fastapi/pydantic into plugin load. Registered unconditionally —
