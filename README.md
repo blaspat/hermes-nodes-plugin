@@ -133,6 +133,30 @@ systemctl --user restart hermes-dashboard
 # then retry `hermes node --help`.
 ```
 
+If you see `error: argument command: invalid choice: 'node'`, the plugin didn't load. Check two things:
+
+```bash
+# 1. The plugin's entry-point is discoverable in the activated venv.
+#    (After 'source ~/.hermes/hermes-agent/venv/bin/activate'.)
+python -c "from importlib.metadata import entry_points; eps = entry_points(group='hermes_agent.plugins'); print([(e.name, e.value) for e in eps])"
+# Should include ('hermes_nodes_plugin', 'hermes_nodes_plugin')
+
+# 2. The plugin is enabled in config with the right key.
+grep -A5 "plugins:" ~/.hermes/config.yaml | head -8
+# plugins.enabled should contain 'hermes_nodes_plugin' — UNDERSORES,
+# matching the entry-point key in pyproject.toml. Not 'hermes-nodes-plugin'
+# (dashes) — that's a different key and the loader will skip it with
+# 'not in plugins.enabled'.
+```
+
+If both look right but `hermes node --help` still fails, **restart the gateway** so it picks up the new entry point — the running process loaded the plugin list at startup and won't rescan until restarted:
+
+```bash
+systemctl --user restart hermes-dashboard
+# wait ~10–30s for the new process to bind the dashboard port,
+# then retry `hermes node --help`.
+```
+
 If `hermes --help` doesn't show `node` after install, restart the gateway (`systemctl --user restart hermes-dashboard`) so it picks up the new entry point.
 
 ## Configuration
