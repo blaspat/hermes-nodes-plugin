@@ -133,6 +133,8 @@ systemctl --user restart hermes-dashboard
 # then retry `hermes node --help`.
 ```
 
+If `hermes --help` doesn't show `node` after install, restart the gateway (`systemctl --user restart hermes-dashboard`) so it picks up the new entry point.
+
 ## Configuration
 
 The plugin reads its config from a YAML file at `~/.hermes/hermes-nodes.yaml`, with environment variables (prefixed `HERMES_NODES_`) overriding file values. Built-in defaults apply when neither is set.
