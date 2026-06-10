@@ -47,30 +47,60 @@ def register(ctx) -> None:
         A failing ``register`` would brick plugin load, so the body is
         wrapped in a broad ``try/except``. We swallow-and-log (never
         raise) — the lifecycle callbacks themselves are also defensive.
+
+    **Lazy imports.** The lifecycle module pulls in ``fastapi`` /
+    ``uvicorn`` (and via :mod:`registry`, the ``pydantic_core`` native
+    extension) at import time. Inside the hermes runtime that native
+    extension sometimes fails to load, which would brick plugin
+    registration. To avoid that we resolve the lifecycle handlers
+    lazily — the wrappers below do their real import at *call* time,
+    so importing this module (and calling ``register``) stays on
+    the stdlib-only path.
     """
-    from hermes_nodes_plugin.lifecycle import (
-        _on_session_end,
-        _on_session_start,
-        setup_node_subcommand,
-    )
-    from hermes_nodes_plugin.tools import TOOLS
+    # Hook callbacks: thin wrappers that defer the lifecycle import
+    # until the gateway actually fires the event. This keeps
+    # ``register()`` (and module import) free of fastapi / pydantic
+    # so the plugin loads even when those native extensions are
+    # unavailable in the host's import context.
+    async def _on_session_start_lazy() -> None:
+        from hermes_nodes_plugin.lifecycle import _on_session_start
+
+        await _on_session_start()
+
+    async def _on_session_end_lazy() -> None:
+        from hermes_nodes_plugin.lifecycle import _on_session_end
+
+        await _on_session_end()
+
+    def _setup_node_subcommand_lazy(subparser) -> None:
+        # Imported lazily so the argparse wiring only pulls cli (and
+        # its downstream deps) when the operator actually invokes
+        # ``hermes node ...``. The hermes CLI calls setup_fn when
+        # building the parser tree, not at plugin-load time.
+        from hermes_nodes_plugin.lifecycle import setup_node_subcommand
+
+        setup_node_subcommand(subparser)
 
     try:
-        ctx.register_hook("on_session_start", _on_session_start)
-        ctx.register_hook("on_session_end", _on_session_end)
+        ctx.register_hook("on_session_start", _on_session_start_lazy)
+        ctx.register_hook("on_session_end", _on_session_end_lazy)
         ctx.register_cli_command(
             "node",
             help=(
                 "Manage paired hermes-nodes (WSS node server). "
                 "Subcommands land in Task 2.10; `status` is available now."
             ),
-            setup_fn=setup_node_subcommand,
+            setup_fn=_setup_node_subcommand_lazy,
             handler_fn=None,
         )
         # Kate tools (Task 2.8 / FR-3.2). Each entry in TOOLS is
         # (name, schema, handler, emoji); the toolset is the
         # plugin's own ("hermes_nodes") so users can enable /
         # disable the whole surface from their Hermes config.
+        # tools.py is stdlib-only, so we can import it eagerly
+        # without dragging fastapi/pydantic into plugin load.
+        from hermes_nodes_plugin.tools import TOOLS
+
         for name, schema, handler, emoji in TOOLS:
             ctx.register_tool(
                 name=name,

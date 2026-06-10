@@ -67,16 +67,27 @@ import argparse
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import uvicorn
+if TYPE_CHECKING:
+    # Imported only for type checkers / annotations (under
+    # ``from __future__ import annotations`` these are strings, so
+    # even at runtime nothing here triggers a real import). We
+    # avoid real imports at module top so this module — which is
+    # wired into the plugin's hot register() path — can be
+    # imported without pulling in fastapi / pydantic_core, whose
+    # native extension sometimes fails to load inside the hermes
+    # runtime's plugin loader. The runtime imports live next to
+    # the functions that need them.
+    import uvicorn  # noqa: F401
+    from hermes_nodes_plugin.config import NodeServerConfig
+    from hermes_nodes_plugin.registry import NodeRegistry
+    from hermes_nodes_plugin.tokens import TokenStore
 
 from hermes_nodes_plugin.audit import default_audit_writer
-from hermes_nodes_plugin.config import NodeServerConfig, load_config
+from hermes_nodes_plugin.config import load_config
 from hermes_nodes_plugin.errors import ConfigError, TokenStoreError
-from hermes_nodes_plugin.registry import NodeRegistry
-from hermes_nodes_plugin.server import create_app
-from hermes_nodes_plugin.tokens import TokenStore, token_store_from_config
+from hermes_nodes_plugin.tokens import token_store_from_config
 
 
 logger = logging.getLogger(__name__)
@@ -106,6 +117,13 @@ class ServerRunner:
         token_store: TokenStore,
         registry: NodeRegistry,
     ) -> None:
+        # ``create_app`` (and via it, the FastAPI app / pydantic /
+        # uvicorn stack) is only needed at the point we actually
+        # build the ASGI application. We import it lazily so this
+        # module can be imported — and ``ServerRunner`` constructed
+        # in tests that mock the app — without the heavy deps.
+        from hermes_nodes_plugin.server import create_app
+
         self._config = config
         self._token_store = token_store
         self._registry = registry
@@ -162,6 +180,11 @@ class ServerRunner:
         if self.is_running:
             logger.debug("hermes-nodes server already running; start() is a no-op")
             return
+
+        # uvicorn is only needed when we actually start the server;
+        # import it lazily so module import stays free of the heavy
+        # ASGI / native-extension stack.
+        import uvicorn
 
         ssl_kwargs: dict[str, Any] = {}
         if self._config.uses_tls():
@@ -419,6 +442,14 @@ def _build_default_runner() -> ServerRunner:
     (we don't swallow them in the build path; that's the whole point
     of the singleton — the caller explicitly asked for the runner).
     """
+    # ``NodeRegistry`` (and via it, ``fastapi.WebSocket`` and the
+    # pydantic_core native extension) is imported lazily. If a host
+    # pulls in this module before the gateway has finished wiring
+    # its native-extension paths, eager import would brick the
+    # process. We pay the import cost here, only when a runner is
+    # actually being built (typically on first session start).
+    from hermes_nodes_plugin.registry import NodeRegistry
+
     config = load_config()
     store = token_store_from_config(config)
     registry = NodeRegistry()

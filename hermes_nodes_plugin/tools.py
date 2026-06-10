@@ -39,14 +39,28 @@ to add that cache.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from hermes_nodes_plugin.environment import (
-    DEFAULT_EXEC_TIMEOUT_SECONDS,
-    MAX_FILE_BYTES,
-    NodeEnvironment,
-)
-from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
+# ``environment`` and ``registry`` both import ``fastapi`` at module
+# top (the registry needs ``WebSocket``; the environment needs the
+# app + connection types). Importing them here would block module
+# load inside the hermes runtime when the pydantic_core native
+# extension can't be loaded — the very chain this plugin's
+# register() refactor is breaking.
+
+# Type-checker-only: the names below are referenced in the tool
+# signatures (e.g. ``registry: NodeRegistry | None = None``). With
+# ``from __future__ import annotations`` they're already strings at
+# runtime, but the type-checker still wants a real definition.
+# TYPE_CHECKING is False at runtime, so this import never executes.
+if TYPE_CHECKING:
+    from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
+
+# The tool handlers below are async functions that the agent
+# runtime invokes at *call* time, so we resolve the heavy imports
+# at the top of each handler body rather than at module import.
+# ``from __future__ import annotations`` keeps the type hints as
+# strings, so annotations don't trigger a real import either.
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +103,14 @@ async def node_exec(
     Raises:
         ValueError: ``target`` or ``command`` is empty.
     """
+    # Lazy imports — see module docstring. The handlers run on the
+    # agent's tool-invocation thread, well after plugin load, so
+    # paying the import cost here doesn't block register().
+    from hermes_nodes_plugin.environment import (
+        DEFAULT_EXEC_TIMEOUT_SECONDS,
+        NodeEnvironment,
+    )
+
     if not target:
         raise ValueError("node_exec: target must be a non-empty string")
     if not command:
@@ -128,6 +150,12 @@ async def node_read(
     Raises:
         ValueError: ``target`` or ``path`` is empty.
     """
+    # Lazy imports — see module docstring.
+    from hermes_nodes_plugin.environment import (
+        DEFAULT_EXEC_TIMEOUT_SECONDS,
+        NodeEnvironment,
+    )
+
     if not target:
         raise ValueError("node_read: target must be a non-empty string")
     if not path:
@@ -173,6 +201,13 @@ async def node_write(
             not one of the three allowed values, or ``content`` is
             too large (exceeds :data:`MAX_FILE_BYTES`).
     """
+    # Lazy imports — see module docstring.
+    from hermes_nodes_plugin.environment import (
+        DEFAULT_EXEC_TIMEOUT_SECONDS,
+        MAX_FILE_BYTES,
+        NodeEnvironment,
+    )
+
     if not target:
         raise ValueError("node_write: target must be a non-empty string")
     if not path:
