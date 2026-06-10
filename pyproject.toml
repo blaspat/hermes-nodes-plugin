@@ -1,10 +1,17 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-nodes-plugin"
-version = "0.1.0"
+# Version is derived from git tags by setuptools-scm (see
+# [tool.setuptools_scm] below). A plain `0.1.0` would freeze the
+# version at the wrong number and require a manual bump on every
+# release; the SCM-driven version always matches the current
+# tag (e.g. tag ``0.2.0`` → version ``0.2.0``), so the GitHub
+# release workflow can build a single sdist/wheel and the
+# artifact's filename always reflects the tag that produced it.
+dynamic = ["version"]
 description = "Hermes Agent plugin: WSS node server for remote execution targets"
 readme = "README.md"
 license = {text = "MIT"}
@@ -84,3 +91,29 @@ exclude_lines = [
 
 [project.scripts]
 hermes-node = "hermes_nodes_plugin.cli:main"
+
+# setuptools-scm configuration (Feature 2: GitHub release on tag).
+#
+# The plugin's version is now derived from git tags instead of a
+# hard-coded ``version = "..."`` in [project]. The release workflow
+# (``.github/workflows/release.yml``) tags with the bare semver
+# (``0.2.0``, no ``v`` prefix) and ``python -m build`` produces an
+# sdist + wheel whose filenames carry that exact version. The
+# on-pypi / on-github release page and the local ``pip install``
+# stay in sync without a manual bump.
+#
+# ``tag_regex`` strips the leading ``v`` that the default regex
+# would also accept — we want *only* bare semver so an operator
+# who tags ``v0.2.0`` (a footgun) doesn't get a release with the
+# wrong version number embedded in the wheel filename.
+#
+# ``fallback_version`` is the version used when setuptools-scm
+# cannot find a tag (e.g. a fresh checkout before the first
+# release tag is pushed). ``local_version`` is appended in dev
+# installs to make it visible that the build is from an
+# untagged commit (``+d20250101``) — the dot before the date is
+# PEP 440's "local segment" separator.
+[tool.setuptools_scm]
+tag_regex = "^(?P<version>[0-9]+(?:\\.[0-9]+)*)$"
+fallback_version = "0.0.0+unknown"
+local_scheme = "node-and-date"
