@@ -106,8 +106,8 @@ def register(ctx) -> None:
     # silently aborted tool registration too).
 
     def _setup_node_subcommand_lazy(subparser) -> None:
-        from hermes_nodes_plugin.cli import setup_node_subcommand
-        setup_node_subcommand(subparser)
+        from hermes_nodes_plugin.cli import setup_node_cli
+        setup_node_cli(subparser)
 
     try:
         register_cli = getattr(ctx, "register_cli_command", None)
