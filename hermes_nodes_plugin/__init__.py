@@ -11,22 +11,6 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-
-def _node_handler(args) -> None:
-    """Dispatch parsed CLI args to the correct node subcommand handler.
-
-    ``setup_node_subcommand`` calls ``subparser.set_defaults(func=<handler>)``
-    for each subcommand, so argparse wires the right function onto
-    ``args.func``. We just invoke it here.
-    """
-    func = getattr(args, "func", None)
-    if func:
-        func(args)
-    else:
-        print("Usage: hermes node <pair|list|revoke|status>")
-        print("Run `hermes node --help` for details.")
-
-
 def register(ctx) -> None:
     """Hermes plugin entry point.
 
@@ -108,6 +92,10 @@ def register(ctx) -> None:
     def _setup_node_subcommand_lazy(subparser) -> None:
         from hermes_nodes_plugin.cli import setup_node_cli
         setup_node_cli(subparser)
+    
+    def _node_handler_lazy(args) -> None:
+        from hermes_nodes_plugin.cli import node_command
+        node_command(args)
 
     try:
         register_cli = getattr(ctx, "register_cli_command", None)
@@ -119,7 +107,7 @@ def register(ctx) -> None:
                     "Subcommands: pair, list, revoke, status."
                 ),
                 setup_fn=_setup_node_subcommand_lazy,
-                handler_fn=_node_handler,
+                handler_fn=_node_handler_lazy,
             )
         else:
             log.debug(

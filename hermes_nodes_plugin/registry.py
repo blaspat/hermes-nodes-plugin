@@ -36,9 +36,15 @@ import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from fastapi import WebSocket
+if TYPE_CHECKING:
+    # Imported only for the type-checker; ``from __future__ import
+    # annotations`` is in effect so this never triggers a real import
+    # at runtime. The server-side code (``server.py``) is the only
+    # thing that *uses* the WebSocket class, and it imports fastapi
+    # at its own module level where it belongs.
+    from fastapi import WebSocket  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +86,12 @@ class NodeConnection:
             within a registry — a second connection from the same name
             would replace the first (the server closes the old one
             before installing the new one).
-        websocket: The underlying FastAPI WebSocket. The registry
-            hands it out to callers (e.g. ``exec`` dispatch in Task
-            2.7) but never closes it directly — that's the connection
-            handler's job.
+        websocket: The underlying FastAPI WebSocket. Typed as ``Any``
+            at runtime so this dataclass can be constructed without
+            the fastapi module being importable (see the
+            ``TYPE_CHECKING`` import above). The server-side code
+            in ``server.py`` constructs connections with a real
+            fastapi WebSocket object.
         connected_at: UTC timestamp of when the auth handshake completed.
         session_id: UUIDv4 the server assigned during ``hello_ack``.
             Echoed back in ``auth_ok`` and used as the connection's
@@ -101,7 +109,7 @@ class NodeConnection:
     """
 
     name: str
-    websocket: WebSocket = field(compare=False, repr=False)
+    websocket: Any = field(compare=False, repr=False)  # type: ignore[assignment]
     connected_at: datetime = field(default_factory=_now_utc)
     session_id: str = ""
     remote_addr: str = ""
