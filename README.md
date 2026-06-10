@@ -2,7 +2,7 @@
 
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that turns any Hermes profile into a "brain" that can command remote nodes — laptops, NAS, headless boxes — over an authenticated WebSocket. Pairs with the [`hermes-nodes`](https://github.com/blaspat/hermes-nodes) Go binary.
 
-> **Status:** v0.1.0-alpha. The WSS server, token store, audit log, and CLI surface are in place and tested; the protocol contract is stable but the on-disk format may shift before v0.2.
+> **Status:** v0.1.0. The WSS server, token store, audit log, auto-pair CLI, and GitHub release workflow are in place and tested. The protocol contract is stable.
 
 ## What it does
 
@@ -133,32 +133,6 @@ systemctl --user restart hermes-dashboard
 # then retry `hermes node --help`.
 ```
 
-If you see `error: argument command: invalid choice: 'node'`, the plugin didn't load. Check two things:
-
-```bash
-# 1. The plugin's entry-point is discoverable in the activated venv.
-#    (After 'source ~/.hermes/hermes-agent/venv/bin/activate'.)
-python -c "from importlib.metadata import entry_points; eps = entry_points(group='hermes_agent.plugins'); print([(e.name, e.value) for e in eps])"
-# Should include ('hermes_nodes_plugin', 'hermes_nodes_plugin')
-
-# 2. The plugin is enabled in config with the right key.
-grep -A5 "plugins:" ~/.hermes/config.yaml | head -8
-# plugins.enabled should contain 'hermes_nodes_plugin' — UNDERSORES,
-# matching the entry-point key in pyproject.toml. Not 'hermes-nodes-plugin'
-# (dashes) — that's a different key and the loader will skip it with
-# 'not in plugins.enabled'.
-```
-
-If both look right but `hermes node --help` still fails, **restart the gateway** so it picks up the new entry point — the running process loaded the plugin list at startup and won't rescan until restarted:
-
-```bash
-systemctl --user restart hermes-dashboard
-# wait ~10–30s for the new process to bind the dashboard port,
-# then retry `hermes node --help`.
-```
-
-If `hermes --help` doesn't show `node` after install, restart the gateway (`systemctl --user restart hermes-dashboard`) so it picks up the new entry point.
-
 ## Configuration
 
 The plugin reads its config from a YAML file at `~/.hermes/hermes-nodes.yaml`, with environment variables (prefixed `HERMES_NODES_`) overriding file values. Built-in defaults apply when neither is set.
@@ -187,13 +161,13 @@ handshake_timeout_seconds: 10
 
 **Environment variable override** (all of the above are also accepted as `HERMES_NODES_<KEY>` in upper-snake form, e.g. `HERMES_NODES_PORT`, `HERMES_NODES_HANDSHAKE_TIMEOUT_SECONDS`).
 
-**`HERMES_NODES_TOKEN_KEY` is required.** Generate one with:
+**`HERMES_NODES_TOKEN_KEY` is generated automatically on first pair.** `hermes node pair` will create a Fernet key and write it to `~/.hermes/.env` (chmod 600) the first time it's run, then mirror it into the current process's `os.environ` so pairing completes even if the disk write fails. You only need to generate one manually if you're deploying to a read-only filesystem where the plugin can't write to `.env`:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Add it to `~/.hermes/profiles/<name>/.env` (or wherever the profile loads its env) so it's set on every session start. If it's missing at first pair, `hermes node pair` will refuse to run with a clear error.
+Add it to `~/.hermes/profiles/<name>/.env` (or wherever the profile loads its env) so it's set on every session start.
 
 ## TLS configuration
 
@@ -269,9 +243,7 @@ hermes node revoke --name work-laptop
 # Is the WSS server running?
 hermes node status
 # Output:
-#   WSS server: listening on 127.0.0.1:6969
-#   TLS: terminated upstream (nginx)
-#   Paired nodes: 2 (1 connected, 1 disconnected)
+#   hermes-nodes server: listening on 127.0.0.1:6969
 ```
 
 From inside an agent session, the four tools work the same way:
