@@ -16,3 +16,7 @@ venv/
 
 # OS
 .DS_Store
+
+# pytest coverage artefacts
+.coverage
+htmlcov/

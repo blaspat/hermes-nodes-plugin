@@ -354,33 +354,70 @@ class TestErrorPaths:
         _, err = capsys.readouterr()
         assert "non-empty" in err
 
-    def test_missing_fernet_key_surfaces_clear_error(
+    def test_missing_fernet_key_auto_generates_and_saves(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A fresh install with no key gives the operator a clear
-        generate-and-export hint, not a stack trace (FR-4.2).
+        """A fresh install with no key auto-generates one (FR-4.2).
+
+        Pre-v0.2.0 behaviour was to surface a ``Fernet.generate_key``
+        hint to stderr; v0.2.0+ auto-generates the key and writes it
+        to ``~/.hermes/.env`` (or the test-injected equivalent). This
+        test pins the new behaviour: no manual
+        ``export HERMES_NODES_TOKEN_KEY=***`` step, the
+        pair just works.
+
+        We pin the helper to write to a ``tmp_path`` so the
+        operator's real ``.env`` is never touched, and we inject
+        a deterministic ``generate`` so the test doesn't depend on
+        randomness.
         """
         from hermes_nodes_plugin import cli as cli_module
         from hermes_nodes_plugin.config import load_config as _real_load_config
+        from hermes_nodes_plugin import env as env_mod
 
         monkeypatch.delenv("HERMES_NODES_TOKEN_KEY", raising=False)
         config_yaml = tmp_path / "hermes-nodes.yaml"
-        config_yaml.write_text("port: 1\n")
+        config_yaml.write_text(
+            f"port: 1\ntoken_store_path: {tmp_path / 'tokens.json'}\n"
+        )
 
         def _fake_load_config(*, env=None, config_path=None):
             return _real_load_config(env=env, config_path=config_yaml)
 
         monkeypatch.setattr(cli_module, "load_config", _fake_load_config)
 
+        # Pin the env helper to a tmp_path .env + deterministic
+        # key. The pair command calls
+        # ``ensure_fernet_key_in_env(var_name=...)`` — we
+        # monkeypatch the module-level symbol so the call
+        # delegates to our controlled version.
+        fake_env_path = tmp_path / "fake_hermes.env"
+        injected_key = "f" * 43 + "="  # Fernet-shaped, 32 bytes b64-encoded
+
+        def _fake_ensure(var_name, env_path=None, *, generate=None):
+            return env_mod.ensure_fernet_key_in_env(
+                var_name=var_name,
+                env_path=fake_env_path,
+                generate=lambda: injected_key,
+            )
+
+        monkeypatch.setattr(cli_module, "ensure_fernet_key_in_env", _fake_ensure)
+
         rc = node_command(_parse(["node", "pair", "--name", "laptop1"]))
-        assert rc == 1
-        _, err = capsys.readouterr()
-        assert "HERMES_NODES_TOKEN_KEY" in err
-        # Hint to generate a key, not a generic stack trace.
-        assert "Fernet.generate_key" in err
+        assert rc == 0, "auto-token should let pair succeed with no manual setup"
+        out, err = capsys.readouterr()
+        # The auto-generated key made it to stdout as the token.
+        assert "token:" in out
+        # A confirmation line tells the operator where the key landed.
+        assert "generated Fernet key" in err
+        assert str(fake_env_path) in err
+        # The key actually got persisted to the (test) env file.
+        assert injected_key in fake_env_path.read_text()
+        # And the var name is in the file in KEY=VALUE form.
+        assert "HERMES_NODES_TOKEN_KEY=" in fake_env_path.read_text()
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,7 @@ import sys
 from typing import Any
 
 from hermes_nodes_plugin.config import load_config
+from hermes_nodes_plugin.env import ensure_fernet_key_in_env
 from hermes_nodes_plugin.errors import ConfigError, TokenStoreError
 from hermes_nodes_plugin.tokens import (
     TokenRecord,
@@ -286,6 +287,25 @@ def _cmd_pair(args: argparse.Namespace) -> int:
     while still surfacing human-readable guidance in the operator's
     terminal.
 
+    **Auto-token (v0.2.0+).** Before the existing token-store
+    flow runs, the pair command ensures the Fernet key is present
+    in the operator's ``~/.hermes/.env`` (FR-4.2: the operator
+    should not have to run ``Fernet.generate_key`` by hand). The
+    helper:
+
+    * uses the key silently if it is already in the env (we never
+      regenerate an existing key — that would invalidate every
+      previously-paired node)
+    * generates a new Fernet key and appends it to
+      ``~/.hermes/.env`` if the file is missing or the var is
+      unset, and prints a confirmation so the operator knows
+      where it landed
+    * surfaces the key + manual recovery instructions on a
+      disk-write failure (read-only fs, permission denied) so
+      the operator can save the key themselves; the in-process
+      pair still completes because we mirror the key into
+      :data:`os.environ` regardless
+
     ``--force`` revokes the existing record first if one is paired
     under the same name and not yet revoked. Revoked-on-disk records
     do not block re-pair (TokenStore.create already allows that),
@@ -296,7 +316,42 @@ def _cmd_pair(args: argparse.Namespace) -> int:
         print("error: --name must be a non-empty string", file=sys.stderr)
         return 1
 
+    # Auto-token: ensure the Fernet key is on disk + in the
+    # process env. We resolve the config first so we know which
+    # env var name the operator configured (default
+    # ``HERMES_NODES_TOKEN_KEY``; the plugin config can override
+    # the literal name). The helper itself does the read /
+    # generate / write / os.environ-mirror dance.
     config = load_config()
+    key_result = ensure_fernet_key_in_env(
+        var_name=config.token_encryption_key_env,
+    )
+    if key_result.status == "wrote":
+        print(
+            f"generated Fernet key and saved to {key_result.path}",
+            file=sys.stderr,
+        )
+    elif key_result.status == "failed":
+        # The pair will still succeed in-process (the helper
+        # mirrored the key into os.environ), but we must tell
+        # the operator their .env didn't get the write so they
+        # can fix permissions / save it manually.
+        print(
+            f"warning: could not write Fernet key to {key_result.path} "
+            f"({key_result.error}). The pair will complete for this "
+            f"invocation, but you must save the key manually or "
+            f"the next `hermes` invocation will fail with "
+            f"'no Fernet key configured'.",
+            file=sys.stderr,
+        )
+        print(
+            f"  export {config.token_encryption_key_env}={key_result.key}",
+            file=sys.stderr,
+        )
+    # ``present`` → silent: the key was already there, we used
+    # it. No need to nag the operator about a file they already
+    # maintain.
+
     store = token_store_from_config(config)
 
     if args.force:
