@@ -26,17 +26,34 @@ The agent then becomes a single point of control over a fleet of headless machin
 
 ## Install
 
-The plugin auto-loads via Hermes's `hermes_agent.plugins` entry-point group — no config file changes needed once the package is installed.
+The plugin auto-loads via Hermes's `hermes_agent.plugins` entry-point group — no config file changes needed once the package is installed. **The install MUST target the venv that `hermes` itself uses**, otherwise the entry-point won't be discoverable and `hermes node …` won't appear in `hermes --help`.
+
+> **Why a venv is required:** modern Debian/Ubuntu (PEP 668) block `pip install` into the system Python. Hermes itself ships in a venv, so we install the plugin there too. If you skip the activation step, you'll hit `error: externally-managed-environment`.
+
+> **Use `python -m pip`, not bare `pip`.** Hermes's venv is uv-managed and ships **without a `pip` binary** on PATH — only `python`, `python3`, `pip3`, and `pip3.11`. If you type `pip install -e .` after activating, the shell finds `/usr/bin/pip` (system pip) and you'll hit PEP 668 again. Always use `python -m pip …` to force pip through the activated Python.
+
+**Find the venv `hermes` uses:**
+
+```bash
+# Default profile: venv lives next to the hermes install
+ls -d ~/.hermes/hermes-agent/venv 2>/dev/null && echo "→ default profile"
+
+# Named profile: venv is under profiles/<name>/
+ls -d ~/.hermes/profiles/*/venv 2>/dev/null
+```
+
+If you have both, pick the one whose `hermes` you actually run. (`which hermes` should be a wrapper that execs the matching venv's `hermes` script.)
 
 ### Option 1 — from a release (once v0.x is cut)
 
 ```bash
-# Activate the Hermes profile's venv first
-source ~/.hermes/profiles/<name>/venv/bin/activate
+# Activate the hermes venv (default profile)
+source ~/.hermes/hermes-agent/venv/bin/activate
+# or, for a named profile:
+# source ~/.hermes/profiles/<name>/venv/bin/activate
 
-# Install a pinned version (replace with the latest tag)
-pip install hermes-nodes-plugin==0.1.0
-# or, with uv:
+python -m pip install hermes-nodes-plugin==0.1.0
+# or, with uv (faster resolver):
 # uv pip install hermes-nodes-plugin==0.1.0
 ```
 
@@ -44,32 +61,57 @@ This is the recommended path once a release exists — you get a pinned, reprodu
 
 ### Option 2 — from source (current path during v0.x; only option until a release is cut)
 
-The plugin has no GitHub releases yet, so this is the only way to install it today. Pick one of the two variants:
+The plugin has no GitHub releases yet, so this is the only way to install it today. **Always activate the hermes venv first**, then pick one of the two variants:
 
 **From GitHub (recommended during v0.x):**
 
 ```bash
-# Activate the Hermes profile's venv first
-source ~/.hermes/profiles/<name>/venv/bin/activate
+# Activate the hermes venv (default profile)
+source ~/.hermes/hermes-agent/venv/bin/activate
+# or, for a named profile:
+# source ~/.hermes/profiles/<name>/venv/bin/activate
 
 # Install the plugin (editable mode for development)
-pip install -e git+https://github.com/blaspat/hermes-nodes-plugin.git#egg=hermes-nodes-plugin
+python -m pip install -e git+https://github.com/blaspat/hermes-nodes-plugin.git#egg=hermes-nodes-plugin
+# or, with uv:
+# uv pip install -e git+https://github.com/blaspat/hermes-nodes-plugin.git#egg=hermes-nodes-plugin
 ```
 
 **Or from a local clone (if you want to inspect / modify the code):**
 
 ```bash
+# 1. Clone (can be anywhere on disk — the venv is what matters)
 git clone https://github.com/blaspat/hermes-nodes-plugin.git
 cd hermes-nodes-plugin
-pip install -e .
+
+# 2. Activate the hermes venv — REQUIRED, even though we're in the
+#    plugin's own checkout. Don't make a fresh venv here, it won't
+#    be on hermes's sys.path.
+source ~/.hermes/hermes-agent/venv/bin/activate
+# or, for a named profile:
+# source ~/.hermes/profiles/<name>/venv/bin/activate
+
+# 3. Install in editable mode (use python -m pip — see note above)
+python -m pip install -e .
+# or, with uv:
+# uv pip install -e .
 ```
+
+> **If you forgot step 2** and hit `error: externally-managed-environment`, you ran `pip` against the system Python. `deactivate` first, then re-run step 2 and step 3. If you ran step 3 *with* the venv active but still got the error, you probably typed `pip` instead of `python -m pip` — the venv has no `pip` binary, so shell fell through to `/usr/bin/pip`.
 
 ### Verify the install
 
 ```bash
 hermes --help | grep "node "
-# should show: node        Pair, list, and revoke remote node connections.
+# should show: node        Manage paired hermes-nodes (WSS node server).
+
+# Confirm the plugin loaded with the right key
+grep -A2 "plugins:" ~/.hermes/config.yaml | head -5
+# plugins.enabled should contain 'hermes_nodes_plugin' (underscores,
+# matching the entry-point key in pyproject.toml)
 ```
+
+If `hermes --help` doesn't show `node` after install, restart the gateway (`systemctl --user restart hermes-dashboard`) so it picks up the new entry point.
 
 ## Configuration
 
