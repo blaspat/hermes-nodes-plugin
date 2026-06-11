@@ -34,12 +34,13 @@ Detailed steps for pairing nodes, listing, executing, reading, and writing. Incl
 ## Roadmap / FAQ
 - [ ] Stabilize TLS handling across environments.
 - [ ] Add auto‑revoke stale connections.
-- Q: Does it support Windows nodes? A: Not officially; only Linux/macOS via WSL or similar.
+- Q: Does it support Windows nodes?
+  A: Not officially; only Linux/macOS via WSL or similar.
 
 ## Related
-- **hermes-nodes:** Remote node binary (`github.com/blaspat/hermes-nodes`).
-- **Hermes Agent:** Core agent framework (`github.com/NousResearch/hermes-agent`).
-- **Documentation:** Full plugin docs (`~/.hermes/hermes-nodes-plugin/README.md`).
+- **[hermes-nodes](`github.com/blaspat/hermes-nodes`):** Remote node binary.
+- **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core agent framework.
+- **[Documentation](README.md):** Full plugin docs.
 
 ---
-License: MIT | Author: © 2026 Blasius Patrick
+License: [MIT](LICENSE.md) | Author: © 2026 Blasius Patrick
