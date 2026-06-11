@@ -31,10 +31,12 @@ Detailed steps for pairing nodes, listing, executing, reading, and writing. Incl
 - Test it: `pytest tests/ -v` for unit tests, `pytest tests/e2e/ -v -m e2e` for end‑to‑end.
 - Workflow: Fork → Branch → PR. See [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed contribution workflow.
 
-## Roadmap / FAQ
+## Roadmap
 - [ ] Stabilize TLS handling across environments.
 - [ ] Add auto‑revoke stale connections.
-- Q: Does it support Windows nodes?
+
+## FAQ
+- Q: Does it support Windows nodes?  
   A: Not officially; only Linux/macOS via WSL or similar.
 
 ## Related
