@@ -81,16 +81,46 @@ Key options:
 - CLI subcommands: `hermes node pair`, `hermes node list`, `hermes node revoke`, `hermes node status`
 
 ## Usage
-1. **TLS Configuration** – see the detailed nginx proxy example in the Quick Start or set `tls_cert_path`/`tls_key_path` for direct TLS.
-2. **Node Pairing** – run the `pair` command on the server, then on the node with the provided token.
-3. **Command Execution** – use `node_exec` inside an agent session or `hermes node exec <target> "<cmd>"` from the CLI.
-4. **File Operations** – `node_read` and `node_write` work with absolute or home‑relative paths.
-5. **Disconnecting** – `hermes node revoke --name <target>` drops the live connection and invalidates the token.
+The following steps walk through a typical workflow from start to finish.
+
+1. **TLS Configuration** – You can expose the node endpoint behind a reverse proxy. The quick‑start snippet shows an nginx setup. If you prefer the plugin to handle TLS directly, set `tls_cert_path` and `tls_key_path` in `~/.hermes/hermes-nodes.yaml`.
+
+2. **Start the Plugin** – The `hermes` binary loads the plugin on startup. Verify it’s running by checking the dashboard or `hermes node --help`.
+
+3. **Pair a New Node**
+   - Run `hermes node pair --name my‑devbox`. The server prints a one‑time token.
+   - On the target machine, execute `hermes-node pair --server wss://<server>:6969 --token <token>`.
+   - The node connects, stores its token, and the server logs the event.
+
+4. **Verify the Connection** – `hermes node list` now lists `my‑devbox` as *connected* with timestamps.
+
+5. **Run Commands Remotely** – From an agent session or via CLI:
+   ```bash
+   node_exec("my‑devbox", "echo hello world")
+   
+   = "hello world"
+   ```
+   Or using the external subcommand:
+   ```bash
+   hermes node exec my‑devbox "cd ~/project && make test"
+   ```
+
+6. **Transfer Files**
+   - Read: `node_read("my‑devbox", "~/project/README.md")` returns the file content.
+   - Write: `node_write("my‑devbox", "~/project/new.txt", "sample", mode="create")` writes a new file, returning `bytes_written`.
+
+7. **Disconnect** – If you need to revoke or remove the node, run `hermes node revoke --name my‑devbox`. The server drops the live connection and deletes the token. Future pairing requires a fresh token.
+
+8. **Audit and Retention** – Every interaction is logged in `~/.hermes/logs/nodes-audit.log`. The log rotates daily by default, and old entries are purged after `audit_retention_days`.
+
+9. **Health Check** – `hermes node status` reports whether the WebSocket server is listening and its uptime.
+
+All of the above can be scripted or run from the agent tooling by importing the four core tools. See the `Core Features` section for exact function signatures.
 
 ## Contributing
 - Code Style: Follow `CONTRIBUTING.md`.
 - Test it: `pytest tests/ -v` for unit tests, `pytest tests/e2e/ -v -m e2e` for end‑to‑end.
-- Workflow: Fork → Branch → PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+- Workflow: Fork ➜ Branch ➜ PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Roadmap / FAQ
 - [ ] Stabilize TLS handling across environments.
@@ -98,7 +128,7 @@ Key options:
 - Q: Does it support Windows nodes? A: Not officially; only Linux/macOS via WSL or similar.
 
 ## Related
-- **hermes-nodes:** Remote node binary (`github.com/blaspat/hermes-nodes`).
+- **hermes‑nodes:** Remote node binary (`github.com/blaspat/hermes-nodes`).
 - **Hermes Agent:** Core agent framework (`github.com/NousResearch/hermes-agent`).
 - **Documentation:** Full plugin docs (`~/.hermes/hermes-nodes-plugin/README.md`).
 
