@@ -58,14 +58,13 @@
 
 ## FAQ
 - **Q:** Does it support Windows nodes?
-> A: Not officially; only Linux/macOS (WSL works).
+  A: Not officially; only Linux/macOS (WSL works).
 - **Q:** How is audit handled?
-> A: All interactions are logged to `~/.hermes/logs/nodes-audit.log` and retained per `audit_retention_days`.
+  A: All interactions are logged to `~/.hermes/logs/nodes-audit.log` and retained per `audit_retention_days`.
 
 ## Related
-- **hermes‑nodes:** Remote node binary (`github.com/blaspat/hermes-nodes`).
-- **Hermes Agent:** Core framework (`github.com/NousResearch/hermes-agent`).
-- **Documentation:** Full plugin docs (`~/.hermes/hermes-nodes-plugin/README.md`).
+- **[hermes‑nodes](`github.com/blaspat/hermes-nodes`):** Remote node binary.
+- **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
 
 ---
-License: MIT | Author: © 2026 Blasius Patrick
+License: [MIT](LICENSE.md) | Author: © 2026 Blasius Patrick
