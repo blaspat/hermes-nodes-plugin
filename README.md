@@ -9,11 +9,20 @@
   # or for a named profile:
   # source ~/.hermes/profiles/<name>/venv/bin/activate
   ```
-- **Run:** See usage section for pairing and CLI commands.
-- **Example:**
+- **Verify installation:** `hermes node --help` should display the node subcommands.
+- **Pair a node:**
   ```bash
   hermes node pair --name work-laptop
-  hermes node list
+  # Server prints a one‑time token
+  # Run on the laptop:
+  hermes-node pair \
+    --server wss://yourdomain.com:6969 \
+    --token <token>
+  ```
+- **Check connectivity:** `hermes node list` should list the new node as *connected*.
+- **Example command execution:**
+  ```bash
+  hermes node exec work-laptop "cd ~/code && pytest -q"
   ```
 
 ## Core Features
@@ -24,25 +33,50 @@
 - CLI subcommands: `hermes node pair`, `hermes node list`, `hermes node revoke`, `hermes node status`
 
 ## Usage
-Detailed steps for pairing nodes, listing, executing, reading, and writing. Includes TLS configuration options (terminate TLS in nginx, direct plugin TLS, self-signed for dev).
+1. **Installation** – Done in Quick Start.
+2. **TLS Configuration** – The plugin listens on `127.0.0.1:6969` by default. For secure production deployments, proxy the WebSocket through nginx or stunnel:
+   ```nginx
+   upstream hermes_nodes {
+     server 127.0.0.1:6969;
+   }
+   server {
+     listen 443 ssl;
+     server_name hermes.example.com;
+     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+     location /ws/nodes {
+       proxy_pass http://hermes_nodes;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "upgrade";
+     }
+   }
+   ```
+   Skip `tls_cert_path`/`tls_key_path` in the plugin’s config.
+   <br>“Option B” – if you prefer the plugin to terminate TLS directly, set `tls_cert_path` and `tls_key_path` in `~/.hermes/hermes-nodes.yaml`.
+3. **Node Pairing** – Run the pair command on the server, then on the node. The node binary connects over the WebSocket and stores its token in the encrypted store.
+4. **Command Execution** – Within an agent session, use the `node_exec` tool:
+   ```python
+   node_exec("work-laptop", "pwd")
+   --> "/home/packer"
+   ```
+5. **File Operations** – Reading and writing is straightforward. Paths are interpreted relative to the node’s home directory unless prefixed with `/`.
+6. **Disconnecting** – To unpair a node, use `hermes node revoke –name work-laptop`. The server will drop any live connection and deny future sessions until a new token is created.
 
 ## Contributing
 - Code Style: Follow the project's `CONTRIBUTING.md` guidelines.
 - Test it: `pytest tests/ -v` for unit tests, `pytest tests/e2e/ -v -m e2e` for end‑to‑end.
 - Workflow: Fork → Branch → PR. See [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed contribution workflow.
 
-## Roadmap
+## Roadmap / FAQ
 - [ ] Stabilize TLS handling across environments.
 - [ ] Add auto‑revoke stale connections.
-
-## FAQ
-- Q: Does it support Windows nodes?  
-  A: Not officially; only Linux/macOS via WSL or similar.
+- Q: Does it support Windows nodes? A: Not officially; only Linux/macOS via WSL or similar.
 
 ## Related
-- **[hermes-nodes](`github.com/blaspat/hermes-nodes`):** Remote node binary.
-- **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core agent framework.
-- **[Documentation](README.md):** Full plugin docs.
+- **hermes‑nodes:** Remote node binary (`github.com/blaspat/hermes-nodes`).
+- **Hermes Agent:** Core agent framework (`github.com/NousResearch/hermes-agent`).
+- **Documentation:** Full plugin docs (`~/.hermes/hermes-nodes-plugin/README.md`).
 
 ---
-License: [MIT](LICENSE.md) | Author: © 2026 Blasius Patrick
+License: MIT | Author: © 2026 Blasius Patrick
