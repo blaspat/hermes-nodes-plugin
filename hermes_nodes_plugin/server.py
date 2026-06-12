@@ -133,6 +133,7 @@ class _HelloMessage(BaseModel):
 
     type: str = Field(pattern=r"^hello$")
     protocol_version: str = Field(max_length=MAX_PROTOCOL_VERSION_LEN)
+    ts: str | None = None
     # node_name must be non-empty after strip() per PROTOCOL §3.1
     # (issue #21: the server used to accept hello with empty /
     # whitespace-only node_name, a §3.1 shape violation). The cap
@@ -207,6 +208,7 @@ class _AuthMessage(BaseModel):
     type: str = Field(pattern=r"^auth$")
     node_name: str = Field(max_length=MAX_NODE_NAME_LEN)
     token: str = Field(max_length=MAX_TOKEN_LEN)
+    ts: str | None = None
 
 
 # ---------------------------------------------------------------------------

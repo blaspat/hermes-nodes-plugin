@@ -377,7 +377,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
     print("", file=sys.stderr)
     print("Run this on the laptop:", file=sys.stderr)
     print(
-        f"  hermes-node pair --server <host:port> --token {token}",
+        f"  hermes-node pair --server <host:port>/ws/nodes --token {token}",
         file=sys.stderr,
     )
     return 0
