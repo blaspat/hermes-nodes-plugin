@@ -83,7 +83,8 @@ from hermes_nodes_plugin.errors import ConfigError
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG_PATH = Path("~/.hermes/hermes-nodes.yaml").expanduser()
-DEFAULT_TOKEN_STORE_PATH = Path("~/.hermes/nodes/tokens.json").expanduser()
+DEFAULT_TOKEN_STORE_PATH = Path("~/.hermes/nodes/tokens.json")
+DEFAULT_TOKEN_STORE_STR = "~/.hermes/nodes/tokens.json"
 
 # Env-var prefix. Task spec only named a handful of vars; we map all six
 # config keys uniformly to keep precedence rules easy to explain.
@@ -107,7 +108,7 @@ class NodeServerConfig:
     port: int = 6969
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
-    token_store_path: str = str(DEFAULT_TOKEN_STORE_PATH)
+    token_store_path: str = DEFAULT_TOKEN_STORE_STR
     # Name of the env var that holds the Fernet key for the token store.
     # Not the key itself — see REQUIREMENTS.md FR-4.1/FR-4.2.
     token_encryption_key_env: str = "HERMES_NODES_TOKEN_KEY"

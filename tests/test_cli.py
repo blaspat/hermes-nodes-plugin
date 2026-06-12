@@ -191,6 +191,7 @@ class TestPairListRevoke:
         # Setup hint to stderr (operator-facing, not scriptable).
         assert "hermes-node pair" in err
         assert "laptop1" in err
+        assert "--name laptop1" in err
         # File is on disk and non-empty (Fernet-encrypted blob).
         assert store_path.exists()
         assert store_path.read_bytes()

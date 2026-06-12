@@ -103,6 +103,7 @@ MAX_ARCH_LEN = 32
 # so a 1MB-string-in-a-list payload still fails validation cheaply.
 MAX_CAPABILITIES = 16
 MAX_CAPABILITY_LEN = 32
+MAX_TS_LEN = 32
 
 # Protocol version. We accept any minor at the same major, per
 # PROTOCOL §5. The server's own "max major" is a hard cutoff.
@@ -133,7 +134,7 @@ class _HelloMessage(BaseModel):
 
     type: str = Field(pattern=r"^hello$")
     protocol_version: str = Field(max_length=MAX_PROTOCOL_VERSION_LEN)
-    ts: str | None = None
+    ts: str | None = Field(default=None, max_length=MAX_TS_LEN)
     # node_name must be non-empty after strip() per PROTOCOL §3.1
     # (issue #21: the server used to accept hello with empty /
     # whitespace-only node_name, a §3.1 shape violation). The cap
@@ -208,7 +209,7 @@ class _AuthMessage(BaseModel):
     type: str = Field(pattern=r"^auth$")
     node_name: str = Field(max_length=MAX_NODE_NAME_LEN)
     token: str = Field(max_length=MAX_TOKEN_LEN)
-    ts: str | None = None
+    ts: str | None = Field(default=None, max_length=MAX_TS_LEN)
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +469,11 @@ def create_app(
         try:
             auth = _AuthMessage.model_validate(raw)
         except ValidationError:
+            logger.warning(
+                "auth message validation failed from %r (node_name=%r): %s",
+                remote_addr, raw.get("node_name") if isinstance(raw, dict) else "?",
+                ValidationError,
+            )
             # Either the message wasn't type=auth, or it was missing
             # node_name / token. Per PROTOCOL §1: anything other than
             # auth after hello_ack → close 4003.

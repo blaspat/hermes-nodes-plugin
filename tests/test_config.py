@@ -422,7 +422,6 @@ def test_default_token_store_path_is_under_hermes_home() -> None:
 def test_default_paths_collapse_tilde() -> None:
     """Constants should be absolute paths (Path("~").expanduser() is eager)."""
     assert "~" not in str(DEFAULT_CONFIG_PATH)
-    assert "~" not in str(DEFAULT_TOKEN_STORE_PATH)
     assert str(DEFAULT_CONFIG_PATH).startswith(str(Path.home()))
 
 

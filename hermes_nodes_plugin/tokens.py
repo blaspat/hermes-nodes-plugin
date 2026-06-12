@@ -721,7 +721,7 @@ def token_store_from_config(config: Any) -> TokenStore:
             f"or in ~/.hermes/.env (sourced by Hermes)."
         )
     return TokenStore(
-        path=Path(config.token_store_path),
+        path=Path(config.token_store_path).expanduser(),
         key=key,
         key_env_name=config.token_encryption_key_env,
     )
