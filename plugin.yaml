@@ -8,3 +8,6 @@ provides_tools:
   - node_read
   - node_write
   - node_list
+provides_hooks:
+  - on_session_start
+  - on_session_end
