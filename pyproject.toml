@@ -59,8 +59,9 @@ dev = [
 hermes_nodes_plugin = "hermes_nodes_plugin"
 
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["hermes_nodes_plugin*"]
-exclude = ["tests*"]
+exclude = ["tests*", "docs*", "scripts*", "systemd*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,12 +69,15 @@ addopts = "-ra"
 
 # NFR-5.1: coverage gate. pytest-cov is invoked from .github/workflows/test.yml
 # with --cov-fail-under=80; these defaults shape the report (term-missing is
-# also passed on the CLI for line-level context in CI output).
+# also passed on the CLI for local runs too.
 [tool.coverage.run]
-source = ["hermes_nodes_plugin"]
+source = ["."]
 branch = true
 omit = [
     "tests/*",
+    "docs/*",
+    "scripts/*",
+    "systemd/*",
     "*/__init__.py",
 ]
 

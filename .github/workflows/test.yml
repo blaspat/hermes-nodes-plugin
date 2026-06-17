@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m pip install -e ".[dev]"
       - name: Lint
-        run: ruff check hermes_nodes_plugin tests
+        run: ruff check . tests
       - name: Test
         # Pre-existing flake: TestResetDefaultRunner::test_reset_sync_with_no_runner_is_noop
         # asserts on a stale ``from module import name`` binding that doesn't reflect
@@ -29,7 +29,8 @@ jobs:
         # as a follow-up; deselected here so NFR-5.1 CI is green from the first run.
         run: |
           pytest \
-            --cov=hermes_nodes_plugin \
+            --cov=. \
             --cov-report=term-missing \
             --cov-fail-under=80 \
+            --cov-omit="tests/*" \
             --deselect tests/test_lifecycle.py::TestResetDefaultRunner::test_reset_sync_with_no_runner_is_noop
