@@ -1,6 +1,6 @@
 """Hermes ``BaseEnvironment`` implementation for paired remote nodes.
 
-This is the interface Kate uses to run shell commands on a paired
+This is the interface Agent uses to run shell commands on a paired
 ``hermes-nodes`` Go binary over the WSS connection. It satisfies the
 same contract as ``hermes_agent.tools.environments.base.BaseEnvironment``
 — ``execute()`` returns ``{"output": str, "returncode": int}`` — so
@@ -16,7 +16,7 @@ around :class:`NodeEnvironment`; the environment does the actual
 dispatch, the tool just exposes it to the agent. Having the dispatch
 logic in an environment also means the same code path can be reused
 by any other Hermes feature that already speaks the environment
-contract (e.g. ``hermes``'s built-in terminal tool, if Patrick ever
+contract (e.g. ``hermes``'s built-in terminal tool, if User ever
 wires it up).
 
 Persistent shell semantics
@@ -869,7 +869,7 @@ class NodeEnvironment:
         :class:`NodeExecutionError` with a synthetic code of
         ``0`` and a reason explaining what was wrong. We
         prefer a structured error over a raw ``KeyError`` /
-        ``TypeError`` because Kate's tool layer will display
+        ``TypeError`` because Agent's tool layer will display
         the message verbatim.
         """
         if not isinstance(result, dict):

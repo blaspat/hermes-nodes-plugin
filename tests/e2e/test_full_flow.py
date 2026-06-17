@@ -35,7 +35,7 @@ Test stages
    node presents ``hello`` + ``auth``, server validates, registry
    marks the node connected.
 3. ``test_tool_execution_flows_end_to_end`` — ``node_exec`` fires
-   from the Kate-facing tool through the environment → server →
+   from the Agent-facing tool through the environment → server →
    fake node → ``exec_result`` → environment → audit row.
 4. ``test_audit_log_writes_one_jsonl_row_with_required_fields`` —
    the audit row is well-formed (ts, node, action, status, latency,
@@ -524,11 +524,11 @@ async def test_tool_execution_flows_end_to_end(
 ) -> None:
     """``node_exec`` flows env → server → fake node → audit row.
 
-    Acceptance stage #3: a Kate tool call (``node_exec``) makes
+    Acceptance stage #3: a Agent tool call (``node_exec``) makes
     it all the way through the dispatch chain and the fake node
     returns ``"hello\\n"`` for ``echo hello``.
 
-    We drive the Kate-facing ``node_exec`` (not the raw env) so
+    We drive the Agent-facing ``node_exec`` (not the raw env) so
     the test exercises the same entry point the agent uses —
     catching any regression in the tool layer's wrapper (target
     validation, timeout conversion, etc.).

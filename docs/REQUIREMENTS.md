@@ -1,8 +1,8 @@
 # hermes-nodes-plugin: Requirements
 
-This document is the source of truth for what the `hermes-nodes-plugin` package must do. The implementation plan in `/home/patrick/.hermes/plans/2026-06-04_001727-hermes-nodes.md` derives from this.
+This document is the source of truth for what the `hermes-nodes-plugin` package must do. The implementation plan in `/home/User/.hermes/plans/2026-06-04_001727-hermes-nodes.md` derives from this.
 
-> **Audience:** Kate (implements), Quinn (validates against), Patrick (approves).
+> **Audience:** Agent (implements), Quinn (validates against), User (approves).
 
 ## 1. Functional requirements
 
@@ -18,7 +18,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **FR-1.5** Node names must be unique. Attempting to pair with an existing name without `--force` is an error.
 
-**Acceptance:** Patrick can run `hermes node pair --name work-laptop`, copy the printed token, run `hermes-node pair --server ... --token ...` on the laptop, and see `work-laptop` appear in `hermes node list` as `connected`.
+**Acceptance:** User can run `hermes node pair --name work-laptop`, copy the printed token, run `hermes-node pair --server ... --token ...` on the laptop, and see `work-laptop` appear in `hermes node list` as `connected`.
 
 ### FR-2: Connection lifecycle
 
@@ -36,11 +36,11 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **Acceptance:** End-to-end test in `tests/e2e/test_full_flow.py` exercises: pair, connect, auth, exec, disconnect, reconnect, revoke-during-connection.
 
-### FR-3: Kate (Hermes agent) integration
+### FR-3: Agent (Hermes agent) integration
 
 **FR-3.1** The plugin registers a `NodeEnvironment` class that implements Hermes's `BaseEnvironment` interface, taking a `target` (node name) as constructor arg.
 
-**FR-3.2** The plugin registers four Kate-facing tools:
+**FR-3.2** The plugin registers four Agent-facing tools:
 - `node_exec(target, command, cwd=None, env=None, timeout_ms=60000)` — runs a shell command on the named node
 - `node_read(target, path)` — reads a file from the named node
 - `node_write(target, path, content, mode="overwrite")` — writes a file on the named node
@@ -48,13 +48,13 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **FR-3.3** The `node_*` tools are registered in the `terminal` and `file` toolsets (or whatever Hermes uses for environment-style tools — verify against `tools/registry.py` during implementation).
 
-**FR-3.4** If Kate calls `node_exec` against a disconnected node, the call returns a structured error in under 2 seconds with this message: `"node 'X' is not connected; check 'hermes node list' to see its current state"`.
+**FR-3.4** If Agent calls `node_exec` against a disconnected node, the call returns a structured error in under 2 seconds with this message: `"node 'X' is not connected; check 'hermes node list' to see its current state"`.
 
-**FR-3.5** Persistent cwd + env are maintained on the node side; the Kate side does not need to track them.
+**FR-3.5** Persistent cwd + env are maintained on the node side; the Agent side does not need to track them.
 
-**FR-3.6** Output is bounded to 10 MB per stream; larger output is truncated with a warning surfaced to Kate.
+**FR-3.6** Output is bounded to 10 MB per stream; larger output is truncated with a warning surfaced to Agent.
 
-**Acceptance:** In a Kate session, `node_exec("work-laptop", "pytest tests/ -q")` returns real test output from the laptop. Running the same call twice in a row with `cd /tmp` in between proves cwd persistence.
+**Acceptance:** In a Agent session, `node_exec("work-laptop", "pytest tests/ -q")` returns real test output from the laptop. Running the same call twice in a row with `cd /tmp` in between proves cwd persistence.
 
 ### FR-4: Configuration
 
@@ -92,13 +92,13 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 ### FR-6: Error handling
 
-**FR-6.1** The plugin never panics. All exceptions are caught, logged, and surfaced as structured errors to Kate.
+**FR-6.1** The plugin never panics. All exceptions are caught, logged, and surfaced as structured errors to Agent.
 
 **FR-6.2** If the WSS server fails to bind (port in use, missing cert), the plugin logs the error and does not block Hermes startup.
 
 **FR-6.3** Connection errors are logged at WARN, not ERROR, since they're routine (laptops go offline).
 
-**Acceptance:** Stopping the node mid-call causes Kate to receive a clear "node disconnected" error within 2 seconds, not a hang.
+**Acceptance:** Stopping the node mid-call causes Agent to receive a clear "node disconnected" error within 2 seconds, not a hang.
 
 ---
 
@@ -118,7 +118,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 ### NFR-2: Performance
 
-**NFR-2.1** The plugin must not add more than 50ms latency to Kate's tool calls (excluding the actual round-trip time to the laptop).
+**NFR-2.1** The plugin must not add more than 50ms latency to Agent's tool calls (excluding the actual round-trip time to the laptop).
 
 **NFR-2.2** The WSS server handles at least 50 concurrent node connections on a 1-CPU VPS without dropping messages.
 
@@ -136,7 +136,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **NFR-4.2** Python 3.11+ (matches Hermes's runtime).
 
-**NFR-4.3** The plugin can be installed into any Hermes profile (claire, luna, kate, custom) without per-profile code changes.
+**NFR-4.3** The plugin can be installed into any Hermes profile (Agent, Agent, Agent, custom) without per-profile code changes.
 
 ### NFR-5: Testability
 
@@ -166,12 +166,12 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 All of the following must be true:
 
-1. ✅ Kate (running in the `kate` profile on a VPS) can run `node_exec("work-laptop", "echo hello")` and receive `hello\n` as the result.
+1. ✅ Agent (running in the `Agent` profile on a VPS) can run `node_exec("work-laptop", "echo hello")` and receive `hello\n` as the result.
 2. ✅ `hermes node pair --name work-laptop` generates a token. `hermes node revoke --name work-laptop` invalidates it. The laptop can no longer reconnect.
-3. ✅ When the laptop is offline, Kate's `node_exec` call returns within 2 seconds with a clear error message.
+3. ✅ When the laptop is offline, Agent's `node_exec` call returns within 2 seconds with a clear error message.
 4. ✅ Audit logs on both the laptop and the VPS show every call with matching `request_id`.
 5. ✅ The plugin's unit test suite passes in CI with >= 80% coverage.
-6. ✅ The e2e test in `tests/e2e/test_full_flow.py` passes on Linux amd64 (CI), and the install scripts work on a clean Mac and a clean Windows machine (manual verification by Patrick).
+6. ✅ The e2e test in `tests/e2e/test_full_flow.py` passes on Linux amd64 (CI), and the install scripts work on a clean Mac and a clean Windows machine (manual verification by User).
 7. ✅ `SECURITY-REVIEW.md` exists and is suitable for showing to a corporate security team.
 8. ✅ A `pip install git+https://github.com/blaspat/hermes-nodes-plugin.git` in any Hermes profile's venv results in the plugin auto-loading and the `hermes node ...` commands appearing in the CLI.
 

@@ -121,4 +121,4 @@ hermes node revoke --name my-devbox
 - **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
 
 ---
-License: [MIT](LICENSE) | Author: © 2026 Blasius Patrick
+License: [MIT](LICENSE) | Author: © 2026 Blasius User

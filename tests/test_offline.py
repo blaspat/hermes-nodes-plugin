@@ -2,7 +2,7 @@
 
 Covers the contract on REQUIREMENTS.md §FR-3.4:
 
-    "If Kate calls ``node_exec`` against a disconnected node, the
+    "If Agent calls ``node_exec`` against a disconnected node, the
     call returns a structured error in under 2 seconds with this
     message: 'node \\'X\\' is not connected; check \\'hermes node
     list\\' to see its current state'."
@@ -18,10 +18,10 @@ Two layers are tested:
    is where the actual message is constructed; if a future
    refactor moves the call elsewhere, this layer is the canary.
 
-2. **Tool layer** — the Kate-facing ``node_exec`` / ``node_read`` /
+2. **Tool layer** — the Agent-facing ``node_exec`` / ``node_read`` /
    ``node_write`` wrappers. These don't catch the exception
    (they re-raise), so the message is the same; the test exists
-   to lock the user-visible contract from the call site Kate
+   to lock the user-visible contract from the call site Agent
    actually hits.
 
 Two "disconnected" shapes are tested:
@@ -89,7 +89,7 @@ EXPECTED_TEMPLATE = (
 )
 
 # The target we exercise. We pick a realistic name so the
-# rendered string is the same shape Kate would see in production.
+# rendered string is the same shape Agent would see in production.
 TARGET = "work-laptop"
 EXPECTED_MESSAGE = EXPECTED_TEMPLATE.format(target=TARGET)
 
@@ -237,12 +237,12 @@ class TestEnvironmentOfflineErrors:
 
 
 # ---------------------------------------------------------------------------
-# Tool layer — Kate-facing wrappers
+# Tool layer — Agent-facing wrappers
 # ---------------------------------------------------------------------------
 
 
 class TestToolOfflineErrors:
-    """The Kate-facing ``node_*`` wrappers must propagate the
+    """The Agent-facing ``node_*`` wrappers must propagate the
     env-layer error unchanged (they don't catch it; the contract
     is that the env's message is what reaches the agent).
     """
@@ -284,7 +284,7 @@ class TestToolOfflineErrors:
         self, registry: NodeRegistry
     ) -> None:
         """Same shape as the env-layer dropped-node test, but
-        going through the Kate-facing wrapper — proves the
+        going through the Agent-facing wrapper — proves the
         message reaches the agent layer for both 'never paired'
         and 'was paired, now dropped' cases."""
         await registry.register(_make_fake_connection(TARGET))

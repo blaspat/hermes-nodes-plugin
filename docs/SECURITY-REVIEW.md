@@ -1,7 +1,7 @@
 # Security Review — hermes-nodes-plugin
 
 **Date:** 2026-06-09
-**Reviewer:** Kate (code-agent)
+**Reviewer:** Agent (code-agent)
 **Source revision:** `961df1a` (main, post-`#33`)
 **Verdict:** No critical findings. All required FR-2.6 rate-limit work has shipped (PR #37). Three intentional spec deviations are stricter or equally safe. Suitable for a corporate security team's initial posture review.
 

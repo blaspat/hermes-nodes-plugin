@@ -43,7 +43,7 @@ class NodeNotConnectedError(PluginError):
 class NodeExecutionError(PluginError):
     """A node returned a structured ``exec_result`` with status=error.
 
-    Carries the protocol-level reason and code so callers (Kate)
+    Carries the protocol-level reason and code so callers (Agent)
     can decide whether to retry, surface a user-visible message, or
     fall back to a different node. The node connection itself
     stays open; the failure is per-call.
