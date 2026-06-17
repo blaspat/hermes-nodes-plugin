@@ -120,14 +120,21 @@ def register(ctx) -> None:
     # ------------------------------------------------------------------ #
     # 3. Agent tools                                                        #
     # ------------------------------------------------------------------ #
-    # tools.py is stdlib-only so we import it eagerly without dragging
-    # fastapi/pydantic into plugin load. Registered unconditionally —
-    # this is the core surface the agent uses.
+    # schemas.py — tool schemas (what the LLM reads)
+    # tools.py  — tool handlers (what runs when called)
+    # Separated per the Hermes plugin guide structure.
 
     try:
-        from hermes_nodes_plugin.tools import TOOLS
+        from hermes_nodes_plugin import schemas, tools
 
-        for name, schema, handler, emoji in TOOLS:
+        for name, schema in schemas.SCHEMAS.items():
+            handler = getattr(tools, name)
+            emoji = {
+                "node_exec": "🖥️",
+                "node_read": "📄",
+                "node_write": "✍️",
+                "node_list": "📋",
+            }.get(name, "🔧")
             ctx.register_tool(
                 name=name,
                 toolset="hermes_nodes",

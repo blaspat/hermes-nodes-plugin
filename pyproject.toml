@@ -58,10 +58,29 @@ dev = [
 # package and then pick `register` off it. See hermes_cli/plugins.py:_load_plugin.
 hermes_nodes_plugin = "hermes_nodes_plugin"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["hermes_nodes_plugin*"]
-exclude = ["tests*", "docs*", "scripts*", "systemd*"]
+[tool.setuptools]
+# Flat layout: hermes_nodes_plugin/ is a namespace package at the repo root.
+# The package consists of the root __init__.py + all the sibling .py modules.
+# Using a manifest (setup.py-inferred) to explicitly list py_modules avoids
+# the find_packages() problem where it skips the root __init__.py.
+# The old find.direct is no longer supported in modern setuptools, so we
+# use py_modules = [...] with explicit module names instead.
+py-modules = [
+    "hermes_nodes_plugin",
+    "hermes_nodes_plugin.audit",
+    "hermes_nodes_plugin.cli",
+    "hermes_nodes_plugin.config",
+    "hermes_nodes_plugin.env",
+    "hermes_nodes_plugin.environment",
+    "hermes_nodes_plugin.errors",
+    "hermes_nodes_plugin.lifecycle",
+    "hermes_nodes_plugin.ratelimit",
+    "hermes_nodes_plugin.registry",
+    "hermes_nodes_plugin.schemas",
+    "hermes_nodes_plugin.server",
+    "hermes_nodes_plugin.tokens",
+    "hermes_nodes_plugin.tools",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -92,9 +111,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "if __name__ == .__main__.:",
 ]
-
-[tool.coverage.run]
-omit = ["tests/*"]
 
 [project.scripts]
 hermes-node = "hermes_nodes_plugin.cli:main"
