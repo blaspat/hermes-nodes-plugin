@@ -59,6 +59,11 @@ curl http://127.0.0.1:6969/nodes/status
 > **Note:** The gateway plugin hook (`on_session_start`) does not fire reliably
 > when the plugin is enabled while the gateway is already running. The systemd
 > service avoids this issue entirely.
+>
+> **Important:** The service file contains placeholder paths (`/home/User/`).
+> Before enabling, edit the file and replace all occurrences of `/home/User/`
+> with your actual home directory, and set `HERMES_NODES_TOKEN_KEY` to your
+> real Fernet key (find it with `grep HERMES_NODES_TOKEN_KEY ~/.bashrc`).
 
 ### 3. Pair a node
 
@@ -72,16 +77,24 @@ hermes-node pair --server ws://<server>:6969 --token <token>
 
 ### 4. Run a command
 
-```bash
-hermes node exec my-devbox "echo hello"
+Once a node is paired, instruct the LLM to use the `node_exec` tool:
+
 ```
+node_exec(target="my-devbox", command="echo hello")
+```
+
+The LLM will route the command over WSS to the node and return the output.
 
 ### 5. Transfer files
 
-```bash
-node_read("my-devbox", "~/project/README.md")
-node_write("my-devbox", "~/project/new.txt", "sample", mode="create")
+The `node_read` and `node_write` tools let the LLM read and write files on a paired node:
+
 ```
+node_read(target="my-devbox", path="~/project/README.md")
+node_write(target="my-devbox", path="~/project/new.txt", content="sample", mode="create")
+```
+
+These are LLM tools — not CLI commands. The LLM handles the routing over WSS automatically.
 
 ### 6. Revoke
 
@@ -91,7 +104,7 @@ hermes node revoke --name my-devbox
 
 ## Contributing
 - Code Style: Follow `CONTRIBUTING.md`.
-- Test it: `pytest -v` for unit tests, `pytest -v -m e2e` for end‑to‑end.
+- Lint it: `ruff check .`
 - Flow: Fork → Branch → PR.
 
 ## FAQ
