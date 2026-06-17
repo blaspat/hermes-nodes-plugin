@@ -1,4 +1,4 @@
-"""Tests for the Kate-facing tools (Task 2.8 / FR-3.2).
+"""Tests for the Agent-facing tools (Task 2.8 / FR-3.2).
 
 Two layers of coverage, matching the project's existing test style
 (``test_environment.py`` does the same split between unit and
@@ -7,7 +7,7 @@ integration):
   1. **Plugin registration** — drive :func:`register` against a
      duck-typed ``ctx`` and assert that all four tools landed in
      the recorded calls. This is what the task's acceptance
-     criteria actually check ("all 4 tools visible in Kate's tool
+     criteria actually check ("all 4 tools visible in Agent's tool
      list"); the deeper behavioural tests live in layer 2.
 
   2. **Tool behaviour** — exercise each tool handler in
@@ -152,7 +152,7 @@ def isolated_registry() -> NodeRegistry:
 class TestRegisterRegistersAllFourTools:
     """The acceptance test for Task 2.8 / FR-3.2.
 
-    "All 4 tools visible in Kate's tool list." We drive
+    "All 4 tools visible in Agent's tool list." We drive
     :func:`register` against a mock ``ctx`` and assert each
     expected name appears with the right schema and toolset.
     """

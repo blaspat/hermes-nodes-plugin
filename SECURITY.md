@@ -9,7 +9,7 @@
 - A compromised node attempting to access files outside the allowlist (defense in depth — both sides enforce)
 
 **Out of scope (v1):**
-- A compromised Hermes brain tricking the node into running commands the user would object to *within* the allowlist. (Mitigation: the path allowlist is the trust boundary; if the user trusts Kate to operate inside `/Users/patrick`, they trust Kate inside `/Users/patrick`. The plugin does not solve "user trusts Kate" — that's a separate problem.)
+- A compromised Hermes brain tricking the node into running commands the user would object to *within* the allowlist. (Mitigation: the path allowlist is the trust boundary; if the user trusts Agent to operate inside `/Users/User`, they trust Agent inside `/Users/User`. The plugin does not solve "user trusts Agent" — that's a separate problem.)
 - Supply-chain attacks on dependencies. (Mitigation: use pinned dependency versions, audit them, but v1 doesn't ship a full SBOM or signed builds.)
 - Physical access to the laptop while the node is running. (Mitigation: full-disk encryption, screen lock — the standard laptop-security story, not this project's job.)
 - DoS against the VPS WSS endpoint. (Mitigation: rate limits at 100 calls/sec/node, but a determined attacker can exhaust VPS resources. Out of scope.)
@@ -38,7 +38,7 @@
 - The check is done on the **canonicalized** path (after `os.path.realpath`), defeating symlink escapes.
 - `exec` is unaffected by the allowlist — see the threat model caveat above.
 
-**Default recommendation:** laptop operators should configure `allowed_paths` to be the smallest set of directories Kate needs. `/Users/<you>/code` is typical.
+**Default recommendation:** laptop operators should configure `allowed_paths` to be the smallest set of directories Agent needs. `/Users/<you>/code` is typical.
 
 ## Audit log
 
@@ -107,4 +107,4 @@ The binary's full source is ~1000 lines of Go. A reviewer can read it end-to-end
 
 ## Reporting a vulnerability
 
-File an issue on the relevant GitHub repo, or contact Patrick directly. Please don't disclose publicly until we've had a chance to fix.
+File an issue on the relevant GitHub repo, or contact User directly. Please don't disclose publicly until we've had a chance to fix.

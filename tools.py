@@ -1,4 +1,4 @@
-"""Kate-facing tools for paired remote nodes (Task 2.8).
+"""Agent-facing tools for paired remote nodes (Task 2.8).
 
 The plugin exposes four tools to the agent:
 
@@ -78,6 +78,8 @@ async def node_exec(
     env: dict[str, str] | None = None,
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
+    task_id: str | None = None,
+    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Run ``command`` on the named node.
 
@@ -133,6 +135,8 @@ async def node_read(
     *,
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
+    task_id: str | None = None,
+    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Read a file from the named node.
 
@@ -180,6 +184,8 @@ async def node_write(
     mode: str = "overwrite",
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
+    task_id: str | None = None,
+    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Write text to a file on the named node.
 
@@ -235,6 +241,8 @@ async def node_write(
 
 async def node_list(
     registry: NodeRegistry | None = None,
+    task_id: str | None = None,
+    user_task: str | None = None,
 ) -> dict[str, Any]:
     """List paired nodes with their current connection state.
 
@@ -434,7 +442,7 @@ def _resolve_registry(override: NodeRegistry | None) -> NodeRegistry:
 
     The default runner is the same one :func:`register` wires
     into the plugin's session lifecycle, so a tool call from
-    inside a Kate session sees the connections the WSS server
+    inside a Agent session sees the connections the WSS server
     has registered. Tests pass ``override`` to use a clean
     :class:`NodeRegistry` that has no live connections, which
     keeps them hermetic.

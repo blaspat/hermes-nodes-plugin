@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Sentinel exception type for waiters that get cancelled because their
 # connection went away (node disconnect, replacement, server drain). The
 # server's dispatch loop and the NodeEnvironment both treat this as a
-# non-error "the call cannot complete" signal — callers (Kate) can decide
+# non-error "the call cannot complete" signal — callers (Agent) can decide
 # whether to surface a user-visible retry.
 class _WaiterCancelled(BaseException):
     """Internal: a pending future was cancelled because its connection died.

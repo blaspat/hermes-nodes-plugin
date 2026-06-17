@@ -1,7 +1,7 @@
 # Requirements Audit — v0.1.0
 
 **Date:** 2026-06-09
-**Auditor:** Claire
+**Auditor:** Agent
 **Scope:** `hermes-nodes-plugin` source at `0df4806` (main, after v0.2.1 hardening)
 **Method:** Read each FR + NFR in `REQUIREMENTS.md`, grep the plugin source + tests for the corresponding code/assertion, classify as ✅ / ⚠️ / ❌.
 
@@ -40,7 +40,7 @@
 | FR-3.2 | Four tools: `node_exec` / `node_read` / `node_write` / `node_list` | ✅ | `tools.py:59/108/147/201`; `TOOLS` tuple at `tools.py:384` |
 | FR-3.3 | **Tools registered in `terminal` and `file` toolsets** | ⚠️ | **Deviation.** Registered in the plugin's own `hermes_nodes` toolset instead (`__init__.py:77`). `tests/test_tools.py:210-215` locks this in. **Decision needed:** is this an intentional departure from the spec, or a bug to fix? My read: intentional — the plugin wants to be toggleable as a unit — but it diverges from the requirement. |
 | FR-3.4 | Disconnected `node_exec` returns structured error in < 2s with exact message | ✅ | `environment.py:340-342` raises `NodeNotConnectedError` with the literal spec message; check is a single `await registry.get()` (no network await) → well under 2s |
-| FR-3.5 | cwd/env persisted on node side, Kate side doesn't track | ✅ | `environment.py:execute()` passes `cwd`/`env` to node per-call; `tools.py:node_exec` does the same — no client-side state |
+| FR-3.5 | cwd/env persisted on node side, Agent side doesn't track | ✅ | `environment.py:execute()` passes `cwd`/`env` to node per-call; `tools.py:node_exec` does the same — no client-side state |
 | FR-3.6 | Output bounded to 10 MB per stream, truncation surfaced | ✅ | Truncation happens on the Go node side; `environment.py:937` appends `[output truncated at 10MB]` hint; `MAX_FILE_BYTES = 10 * 1024 * 1024` at `environment.py:100` for `node_read` |
 
 **FR-3: 5/6 implemented; FR-3.3 deviates from spec (decision needed).**
@@ -117,7 +117,7 @@
 |---|---|---|---|
 | NFR-4.1 | Works with any Hermes v0.13+; accepts protocol 0.1.x | ✅ | `server.py:105` `PROTOCOL_MAJOR = 0`, `server.py:549` `f"{PROTOCOL_MAJOR}.1.0"` = `0.1.0` |
 | NFR-4.2 | **Python 3.11+** | ⚠️ | `pyproject.toml:11` says `requires-python = ">=3.10"`. Off by one minor. The plugin code uses `X \| None` syntax (PEP 604) which is 3.10+, so the code matches the pyproject, but the pyproject is one version behind the spec. Trivial fix. |
-| NFR-4.3 | Installable into any Hermes profile (claire, luna, kate, custom) | ✅ | `pyproject.toml` uses generic entry-point, no per-profile code |
+| NFR-4.3 | Installable into any Hermes profile (Agent, Agent, Agent, custom) | ✅ | `pyproject.toml` uses generic entry-point, no per-profile code |
 
 **NFR-4: 2/3 implemented; NFR-4.2 pyproject is `>=3.10`, spec asks `3.11+`. Trivial bump.**
 
@@ -137,7 +137,7 @@
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | `node_exec("work-laptop", "echo hello")` returns `hello\n` from a Kate profile on a VPS | ✅ (logic in place; real-world demo gated on having a real node + Go binary, which is outside the plugin) |
+| 1 | `node_exec("work-laptop", "echo hello")` returns `hello\n` from a Agent profile on a VPS | ✅ (logic in place; real-world demo gated on having a real node + Go binary, which is outside the plugin) |
 | 2 | Pair / revoke / can't-reconnect-after-revoke flow | ✅ (all paths tested) |
 | 3 | Disconnected → clear error in < 2s | ✅ |
 | 4 | Audit logs on both sides correlate by `request_id` | ✅ (server generates UUIDv4; Go side embeds it; format matches) |
