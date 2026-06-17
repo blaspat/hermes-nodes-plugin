@@ -93,6 +93,9 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
+[tool.coverage.run]
+omit = ["tests/*"]
+
 [project.scripts]
 hermes-node = "hermes_nodes_plugin.cli:main"
 

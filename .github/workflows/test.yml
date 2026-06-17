@@ -32,5 +32,4 @@ jobs:
             --cov=. \
             --cov-report=term-missing \
             --cov-fail-under=80 \
-            --cov-omit="tests/*" \
             --deselect tests/test_lifecycle.py::TestResetDefaultRunner::test_reset_sync_with_no_runner_is_noop
