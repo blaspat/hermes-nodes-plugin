@@ -729,6 +729,18 @@ class NodeEnvironment:
         A malformed payload (missing ``type``, non-dict, etc.)
         raises :class:`NodeReadError` with code 0 — mirrors the
         :meth:`_decode_exec_result` defensive stance.
+
+        Truncation note
+        ---------------
+        Unlike :meth:`_decode_exec_result` (which appends a hint line
+        to the output string when ``truncated`` is set), this method
+        surfaces ``truncated`` only as a boolean field in the return
+        dict — the ``content`` string itself is not augmented. This
+        is intentional: ``read`` deals in binary file content where a
+        text hint injected into the byte stream would corrupt the
+        data. Callers that need to surface a truncation notice to
+        the agent should check ``result["truncated"]`` and add their
+        own user-facing message.
         """
         if not isinstance(result, dict):
             raise NodeReadError(

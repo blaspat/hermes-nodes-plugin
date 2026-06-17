@@ -543,9 +543,6 @@ def reset_default_runner_sync(timeout: float = 5.0) -> None:
         # cleared it. No work to do.
         return
     runner = _default_runner
-    # Clear the global first so a concurrent ``get_default_runner()``
-    # rebuilds a fresh runner rather than picking up the one we're
-    # draining.
     _default_runner = None
 
     try:
@@ -559,6 +556,10 @@ def reset_default_runner_sync(timeout: float = 5.0) -> None:
         try:
             asyncio.run(runner.drain(timeout=2.0))
         except Exception as exc:
+            # Drain failed — the runner is still alive and
+            # registered. Restore the global so a retry or
+            # a diagnostic call can find it.
+            _default_runner = runner
             raise RuntimeError(
                 f"reset_default_runner_sync: drain failed: {exc!r}"
             ) from exc

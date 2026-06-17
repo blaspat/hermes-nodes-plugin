@@ -78,8 +78,6 @@ async def node_exec(
     env: dict[str, str] | None = None,
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
-    task_id: str | None = None,
-    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Run ``command`` on the named node.
 
@@ -135,8 +133,6 @@ async def node_read(
     *,
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
-    task_id: str | None = None,
-    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Read a file from the named node.
 
@@ -184,8 +180,6 @@ async def node_write(
     mode: str = "overwrite",
     timeout_ms: int | None = None,
     registry: NodeRegistry | None = None,
-    task_id: str | None = None,
-    user_task: str | None = None,
 ) -> dict[str, Any]:
     """Write text to a file on the named node.
 
@@ -241,8 +235,6 @@ async def node_write(
 
 async def node_list(
     registry: NodeRegistry | None = None,
-    task_id: str | None = None,
-    user_task: str | None = None,
 ) -> dict[str, Any]:
     """List paired nodes with their current connection state.
 
