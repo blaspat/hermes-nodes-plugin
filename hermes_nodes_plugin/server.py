@@ -550,6 +550,14 @@ def create_app(
                 # We await this so the registry's lock isn't held
                 # longer than necessary, but it's cheap.
                 await registry.touch_heartbeat(auth.node_name)
+                # Respond to ping with pong echoing the ts so the
+                # client's heartbeat watchdog stays quiet (PROTOCOL §6).
+                if raw.get("type") == "ping":
+                    await _send_json_safe(websocket, {
+                        "type": "pong",
+                        "ts": _now_rfc3339_ms(),
+                        "echo_ts": raw.get("ts", ""),
+                    })
                 # FR-2.6 sliding-window rate limit, applied *after*
                 # the handshake (we know ``auth.node_name``) and
                 # *before* the action handler dispatches the
