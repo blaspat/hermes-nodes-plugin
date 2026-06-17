@@ -589,6 +589,17 @@ def create_app(
             # path. See hermes-nodes-plugin issue #10.
             await registry.unregister(auth.node_name, expected_session_id=session_id)
 
+    # --------------------------------------------------------------------- #
+    # Status endpoint — provides ``hermes node list`` with the live set of  #
+    # connected node names without the CLI needing its own registry.        #
+    # Registered unconditionally so the CLI can always reach it.             #
+    # --------------------------------------------------------------------- #
+
+    @app.get("/nodes/status")
+    async def nodes_status() -> dict[str, Any]:
+        connected = await registry.list_connected()
+        return {"connected_names": [c.name for c in connected]}
+
     return app
 
 

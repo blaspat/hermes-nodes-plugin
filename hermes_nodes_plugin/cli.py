@@ -574,49 +574,27 @@ def _connected_names() -> set[str]:
     """Return the set of node names with a live connection.
 
     The registry is owned by the long-running server; the CLI
-    command is a short-lived process. We pull a snapshot via
-    :func:`asyncio.run` on a private loop — fine for the tens of
-    nodes a single operator will ever pair.
+    command is a short-lived process. We query the server's HTTP
+    status endpoint at ``/nodes/status`` rather than maintaining
+    our own in-process registry — the CLI's registry would be
+    a fresh empty one that never saw any connections.
 
-    If the server isn't running, the runner's registry isn't
-    available, or the loop is already running in the parent
-    context (e.g. someone wired the CLI into an async test), we
-    fall back to an empty set. The list command should still
-    succeed in that case — connection state just collapses to
-    ``disconnected`` / ``never_seen`` for every row.
+    If the server isn't running, the port isn't listening, or
+    the endpoint fails, we fall back to an empty set. The list
+    command should still succeed in that case — connection state
+    just collapses to ``disconnected`` / ``never_seen`` for
+    every row.
     """
+    config = load_config()
+    base_url = f"http://{config.host}:{config.port}"
+    status_url = f"{base_url}/nodes/status"
     try:
-        from hermes_nodes_plugin.lifecycle import _default_runner
+        import urllib.request
+        with urllib.request.urlopen(status_url, timeout=2.0) as resp:
+            data = __import__("json").loads(resp.read())
+            return set(data.get("connected_names", []))
     except Exception:
         return set()
-
-    runner = _default_runner
-    if runner is None:
-        # Server hasn't been started yet — no live connections.
-        return set()
-
-    registry = getattr(runner, "_registry", None)
-    if registry is None:
-        return set()
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None and loop.is_running():
-        # Caller is already on a loop (tests that wire this into
-        # an async test). Best we can do without crossing loops.
-        return set()
-
-    async def _snapshot() -> list[Any]:
-        return await registry.list_connected()
-
-    try:
-        conns = asyncio.run(_snapshot())
-    except Exception:
-        return set()
-    return {c.name for c in conns}
 
 
 def _close_active_connection(name: str) -> None:
