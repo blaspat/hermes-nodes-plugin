@@ -14,27 +14,11 @@ A Hermes Agent plugin that turns any Hermes profile into a “brain” to comman
 Install Python 3.11+, uv (optional), and have a Hermes Agent set up.
 
 ## Installation
-Install the plugin via pip:
+Install the plugin:
 
  ```bash
- python -m pip install hermes-nodes-plugin==0.1.0
- # or with uv for speed
- uv pip install hermes-nodes-plugin==0.1.0
- ```
-
- For development, clone the repo and install in editable mode.
-
- ```bash
- git clone https://github.com/blaspat/hermes-nodes-plugin.git
- cd hermes-nodes-plugin
- python -m pip install -e .
- # or uv pip install -e .
- ```
-
- Verify the CLI appears:
-
- ```bash
- hermes node --help
+ git clone https://github.com/blaspat/hermes-nodes-plugin \
+  ~/.hermes/plugins/hermes-nodes-plugin
  ```
 
 ## Core Features
