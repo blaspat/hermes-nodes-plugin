@@ -1,0 +1,40 @@
+[Unit]
+Description=Hermes Nodes WSS Server — distributed edge node execution
+Documentation=https://github.com/blaspat/hermes-nodes-plugin
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+# The server runs in a daemon thread inside a long-lived Python process.
+# Using a daemon thread (rather than forking) avoids a double-fork RPP
+# issue and lets the server use the gateway's venv / dependencies
+# without a separate virtualenv.
+# See: hermes_nodes_plugin.lifecycle.ServerRunner
+ExecStart=/home/patrick/.hermes/hermes-agent/venv/bin/python /home/patrick/.hermes/plugins/hermes-nodes-plugin/scripts/run_server.py
+Restart=always
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-nodes-server
+
+# Security hardening
+User=patrick
+Group=patrick
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Allow write to nodes tokens and audit logs
+ReadWritePaths=/home/patrick/.hermes/nodes
+ReadWritePaths=/home/patrick/.hermes/logs
+
+# HERMES_NODES_TOKEN_KEY must be set — copy from your shell:
+#   grep HERMES_NODES_TOKEN_KEY ~/.bashrc ~/.profile ~/.environment 2>/dev/null
+# The value is the Fernet key used to encrypt pairing tokens.
+Environment="HERMES_NODES_TOKEN_KEY=<your-fernet-key-here>"
+
+[Install]
+WantedBy=default.target
