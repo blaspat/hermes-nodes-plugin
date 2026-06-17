@@ -1,133 +1,35 @@
 name: release
 
-# Feature 2: GitHub release on tag.
+# Creates a GitHub Release with auto-generated changelog from PR titles.
+# No Python build step — the package is distributed via Hermes plugin loader
+# (entry-point), not PyPI. Artifacts are not created.
 #
-# Triggers on bare-semver tags (``0.2.0``, no ``v`` prefix). The
-# workflow checks out the tag, builds an sdist + wheel, and
-# publishes them as a GitHub Release named after the tag. PyPI
-# is intentionally out of scope — ``hermes-nodes-plugin`` is
-# distributed via the Hermes plugin loader (entry-point), not
-# the Python Package Index, and the spec is explicit about
-# GitHub Releases only.
-#
-# Tag format: ``^[0-9]+(\\.[0-9]+)*$`` (mirrors the
-# ``tag_regex`` in pyproject.toml so the two stay in lockstep).
-# A tag with a leading ``v`` (e.g. ``v0.2.0``) won't match and
-# won't trigger a build — that's intentional, see the
-# setuptools-scm config comment for the rationale.
+# Tag format: bare semver (``0.2.0``, no ``v`` prefix).
+# Mirrors ``tag_regex`` in pyproject.toml.
 on:
   push:
-    # GitHub Actions tag matching is glob-style (``fnmatch``), not
-    # regex, so we use ``*`` (not ``+``) for repetition and treat
-    # ``.`` as a literal separator. The three patterns below cover
-    # 1-, 2-, and 3-segment semver; a 4+ segment tag (e.g. ``0.2.0.1``)
-    # is still matched by the 3-segment pattern's trailing ``*``.
-    # The leading-char ``[0-9]`` keeps ``v0.2.0`` out — only bare
-    # semver triggers a release, mirroring the ``tag_regex`` in
-    # pyproject.toml.
     tags:
       - "[0-9]*"
       - "[0-9]*.[0-9]*"
       - "[0-9]*.[0-9]*.[0-9]*"
 
-# ``contents: write`` is required for the ``gh release create``
-# call at the bottom. The default GITHUB_TOKEN has read-only
-# perms in older Actions runners; ``actions/checkout@v4`` with
-# ``persist-credentials: false`` is the modern equivalent and
-# avoids the "GitHub Actions is leaving credentials in the
-# checkout dir" advisory. We re-enable the credential just for
-# the release step via an explicit ``gh auth login --with-token``
-# pattern below.
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: build sdist + wheel
+  release:
+    name: publish GitHub Release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history so setuptools-scm can read the tag
-          # annotation. The default shallow checkout (depth 1)
-          # would still work for the tag commit itself, but
-          # pulling the full history makes any future
-          # ``git log``-based changelog step (out of scope
-          # here) trivial to add.
           fetch-depth: 0
-          # Don't leave the default GITHUB_TOKEN in .git/config
-          # after checkout — the release step uses an
-          # explicit ``gh release create`` invocation that
-          # doesn't need it, and the orphan credential is
-          # an unnecessary attack surface.
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          # The build env doesn't need the ``.venv`` cache —
-          # we use a throwaway venv below — so no cache key.
-
-      - name: Install build backend
-        # ``build`` pulls in setuptools-scm transitively. The
-        # pinned versions match what ``pip install -e .[dev]``
-        # resolves to locally, so a tag-built wheel has the
-        # same metadata as a developer's local ``python -m
-        # build``.
-        run: python -m pip install --upgrade "build>=1.2"
-
-      - name: Build sdist + wheel
-        # ``--sdist`` + ``--wheel`` together, no flags, lets
-        # ``build`` figure out the right invocations. The
-        # artifacts land in ``dist/`` with names like
-        # ``hermes_nodes_plugin-0.2.0-py3-none-any.whl`` —
-        # the ``0.2.0`` comes from setuptools-scm reading the
-        # tag via ``git describe``.
-        run: python -m build
-
-      - name: Upload build artifacts
-        # ``actions/upload-artifact@v4`` is the modern path
-        # (v3 is deprecated as of 2025-01-30). The artifact
-        # is consumed by the ``release`` job below; we keep
-        # it as a separate job so a tag-push can also be
-        # built and inspected without auto-publishing.
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
-
-  release:
-    name: publish GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    # Same minimal permission set as the build job. The
-    # ``contents: write`` in the workflow-level ``permissions``
-    # is what makes ``gh release create`` succeed.
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
       - name: Create GitHub Release
-        # ``gh release create`` with ``--generate-notes`` lets
-        # GitHub produce the changelog from PR titles — no
-        # manual maintainer step. ``--draft`` would let us
-        # review before publishing, but the workflow already
-        # has a build-pass gate so a draft is extra friction
-        # for no extra safety. If a maintainer wants a draft
-        # in the future, add ``--draft`` here.
         env:
-          # ``GITHUB_TOKEN`` is auto-injected by the runner.
-          # We pass it explicitly to ``gh`` so the call
-          # doesn't pick up a stale local credential from
-          # ``~/.config/gh/hosts.yml`` if the runner image
-          # is pre-configured for something else.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/*
+            --generate-notes
