@@ -29,11 +29,20 @@ from pathlib import Path
 
 HERMES_HOME = Path.home() / ".hermes"
 PLUGIN_DIR = HERMES_HOME / "plugins" / "hermes-nodes-plugin"
-VENV_PYTHON = HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python"
 
-# Make sure the plugin is importable (it lives in PLUGIN_DIR)
-if str(PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_DIR))
+# Register the hermes_nodes_plugin namespace in sys.modules so that
+# "from hermes_nodes_plugin.lifecycle import ..." works with flat layout.
+# This replicates what Hermes's _load_directory_module does when it
+# loads the plugin as hermes_plugins.hermes_nodes_plugin.
+import types
+import sys
+
+_HERMES_PLUGINS_PARENT = "hermes_nodes_plugin"
+_plugin_ns = types.ModuleType(_HERMES_PLUGINS_PARENT)
+_plugin_ns.__path__ = [str(PLUGIN_DIR)]          # enables "from .X" relative imports
+_plugin_ns.__package__ = _HERMES_PLUGINS_PARENT   # __package__ = "hermes_nodes_plugin"
+_plugin_ns.__name__ = _HERMES_PLUGINS_PARENT
+sys.modules[_HERMES_PLUGINS_PARENT] = _plugin_ns
 
 # ── logging ──────────────────────────────────────────────────────────────────
 
