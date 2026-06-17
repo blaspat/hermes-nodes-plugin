@@ -29,7 +29,6 @@ from pathlib import Path
 
 HERMES_HOME = Path.home() / ".hermes"
 PLUGIN_DIR = HERMES_HOME / "plugins" / "hermes-nodes-plugin"
-VENV_PYTHON = HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python"
 
 # Make sure the plugin is importable (it lives in PLUGIN_DIR)
 if str(PLUGIN_DIR) not in sys.path:

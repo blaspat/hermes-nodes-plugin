@@ -1,69 +1,77 @@
 # hermes-nodes-plugin
-A Hermes Agent plugin that turns any Hermes profile into a “brain” to command remote nodes over an authenticated WebSocket.
+
+A Hermes Agent plugin that turns any Hermes profile into a "brain" to command remote nodes over an authenticated WebSocket.
 
 ## Table of Contents
+
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
-- [Core Features](#core-features)
-- [Usage](#usage)
+- [Start the server](#start-the-server)
+- [Pair a node](#pair-a-node)
+- [Tools](#tools)
+- [Revoke a node](#revoke-a-node)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
-- [FAQ](#faq)
-- [Related](#related)
 
 ## Prerequisites
-Install Python 3.11+, uv (optional), and have a Hermes Agent set up.
+
+- Python 3.11+
+- Hermes Agent installed
+- A Fernet key for token encryption (generated automatically on first run, or provide your own)
 
 ## Installation
-Install the plugin via pip:
 
- ```bash
- python -m pip install hermes-nodes-plugin==0.1.0
- # or with uv for speed
- uv pip install hermes-nodes-plugin==0.1.0
- ```
+### 1. Clone and install
 
- For development, clone the repo and install in editable mode.
+```bash
+git clone https://github.com/blaspat/hermes-nodes-plugin.git
+cd hermes-nodes-plugin
+pip install -e .
+# or: uv pip install -e .
+```
 
- ```bash
- git clone https://github.com/blaspat/hermes-nodes-plugin.git
- cd hermes-nodes-plugin
- python -m pip install -e .
- # or uv pip install -e .
- ```
+This installs the `hermes-node` CLI and registers the plugin with Hermes.
 
- Verify the CLI appears:
+### 2. Enable the plugin
 
- ```bash
- hermes node --help
- ```
+```bash
+hermes plugins enable hermes-nodes-plugin
+```
 
-## Core Features
-- `node_exec(target, command)`: run shell commands on a paired node.
-- `node_read(target, path)`: read a file on a paired node.
-- `node_write(target, path, content, mode="overwrite")`: write a file on a paired node.
-- `node_list()`: list paired nodes and their connection state.
+Restart the gateway for the plugin to load its tools:
 
-## Usage
+```bash
+systemctl --user restart hermes-gateway
+```
 
-### 1. Configure
-Edit `~/.hermes/hermes-nodes.yaml` with host/port/TLS settings.
+Verify the toolset is available:
 
-### 2. Start the server (recommended: systemd service)
+```bash
+hermes tools list | grep hermes_nodes
+# ✓ enabled  hermes_nodes  🔌 Hermes Nodes
+```
 
-The WSS server runs best as a standalone systemd service — independent of the
-Hermes gateway process. This ensures it survives gateway restarts and boots
-automatically.
+## Start the server
+
+The WSS server can run as a standalone systemd service — independent of the Hermes gateway. This is the recommended approach.
+
+### Option A: systemd service (recommended)
 
 ```bash
 # Copy the service unit
-cp ~/.hermes/plugins/hermes-nodes-plugin/systemd/hermes-nodes-server.service \
-   ~/.config/systemd/user/
+cp systemd/hermes-nodes-server.service ~/.config/systemd/user/
 
-# Set your Fernet key — find it with:
-#   grep HERMES_NODES_TOKEN_KEY ~/.bashrc ~/.profile 2>/dev/null
-# Edit the service file and replace <your-fernet-key-here> with the actual value
+# Set your Fernet key in the service
+# Find your existing key:
+grep HERMES_NODES_TOKEN_KEY ~/.hermes/.env
 
-# Reload systemd and enable the service
+# Edit the service file and set the actual key value:
+# Environment="HERMES_NODES_TOKEN_KEY=<your-key-here>"
+
+# Fix the path (the repo ships with /home/User as a placeholder)
+sed -i 's|/home/User|/home/patrick|g' ~/.config/systemd/user/hermes-nodes-server.service
+
+# Reload and start
 systemctl --user daemon-reload
 systemctl --user enable --now hermes-nodes-server
 
@@ -72,53 +80,139 @@ ss -tlnp | grep 6969
 curl http://127.0.0.1:6969/nodes/status
 ```
 
-> **Note:** The gateway plugin hook (`on_session_start`) does not fire reliably
-> when the plugin is enabled while the gateway is already running. The systemd
-> service avoids this issue entirely.
+### Option B: manual
 
-### 3. Pair a node
+```bash
+# Set the Fernet key from ~/.hermes/.env
+export HERMES_NODES_TOKEN_KEY=$(grep HERMES_NODES_TOKEN_KEY ~/.hermes/.env | cut -d= -f2)
+python scripts/run_server.py
+```
+
+The server listens on `127.0.0.1:6969`. External access requires a reverse proxy (e.g. nginx, Cloudflare Tunnel) forwarding `/:6969/ws/nodes` to it.
+
+## Pair a node
+
+### 1. Generate a pairing token
 
 ```bash
 hermes node pair --name my-devbox
-# prints a one-time token
-
-# On the remote node, run:
-hermes-node pair --server ws://<server>:6969 --token <token>
 ```
 
-### 4. Run a command
+This prints a command to run on the remote node:
+
+```
+name:  my-devbox
+
+Run this on the laptop:
+  hermes-node pair --server <host:port>/ws/nodes --token <token> --name my-devbox
+token: <one-time token — copy it now>
+```
+
+### 2. Re-pairing
+
+If a node's token was revoked or expired, use `--force` to revoke the old record and issue a fresh one:
 
 ```bash
-hermes node exec my-devbox "echo hello"
+hermes node pair --name my-devbox --force
 ```
 
-### 5. Transfer files
+> **Warning:** `--force` immediately revokes the existing token. The old node will be disconnected and unable to reconnect.
+
+### 3. Verify connection
 
 ```bash
-node_read("my-devbox", "~/project/README.md")
-node_write("my-devbox", "~/project/new.txt", "sample", mode="create")
+curl http://127.0.0.1:6969/nodes/status
+# {"connected_names":["my-devbox"]}
 ```
 
-### 6. Revoke
+## Tools
+
+Once the plugin is enabled and the server is running, four tools are available to the agent:
+
+| Tool | Description |
+|------|-------------|
+| `node_exec(target, command)` | Run a shell command on a paired node |
+| `node_read(target, path)` | Read a file from a paired node |
+| `node_write(target, path, content)` | Write content to a file on a paired node |
+| `node_list()` | List all paired nodes and their connection state |
+
+`node_list()` works even when no nodes are connected — it returns an empty list. The other tools return a helpful error if the target node is not connected.
+
+## Revoke a node
 
 ```bash
 hermes node revoke --name my-devbox
 ```
 
+The node is immediately disconnected and its token is invalidated.
+
+## Troubleshooting
+
+### `hermes plugins enable` says "not installed"
+
+The plugin was installed in the default profile's plugins directory (`~/.hermes/plugins/`) but the current Hermes profile uses a different directory. Symlink it:
+
+```bash
+ln -s ~/.hermes/plugins/hermes-nodes-plugin \
+       ~/.hermes/profiles/<current-profile>/plugins/
+```
+
+### Port 6969 not listening after server restart
+
+The server process may have been killed. Restart it:
+
+```bash
+systemctl --user restart hermes-nodes-server
+# or, if not using systemd:
+export HERMES_NODES_TOKEN_KEY=$(grep HERMES_NODES_TOKEN_KEY ~/.hermes/.env | cut -d= -f2)
+python scripts/run_server.py &
+```
+
+### Node shows as disconnected in `hermes node list`
+
+- The token may have been revoked — re-pair with `hermes node pair --name <name> --force`
+- The node's `hermes-node` binary may be offline — start it on the node machine
+- Check `~/.hermes/logs/nodes-audit.log` for connection errors
+
+### Tools return "node is not connected" even though it appears in `node_list`
+
+The node is paired but the server cannot reach it. The Go binary on the node may have lost its connection — restart `hermes-node run` on that machine.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────┐
+│   Hermes Agent (Kate / CLI)             │
+│   hermes-nodes-plugin tool layer        │
+│   node_exec / node_read / node_write    │
+└──────────────┬──────────────────────────┘
+               │ WSS /ws/nodes (auth token)
+               ▼
+┌─────────────────────────────────────────┐
+│   hermes-nodes WSS Server (port 6969)   │
+│   hermes_nodes_plugin.lifecycle          │
+└──────────────┬──────────────────────────┘
+               │ internal NodeRegistry
+               ▼
+┌─────────────────────────────────────────┐
+│   Paired nodes (hermes-node binary)     │
+│   work-mac, devbox, ...                 │
+└─────────────────────────────────────────┘
+```
+
+The server is stateless per connection — each node holds its own pairing token. Tokens are one-way hashed server-side (Fernet encryption, PBKDF2-HMAC-SHA256).
+
 ## Contributing
+
 - Code Style: Follow `CONTRIBUTING.md`.
-- Test it: `pytest -v` for unit tests, `pytest -v -m e2e` for end‑to‑end.
+- Test it: `pytest -v` for unit tests.
 - Flow: Fork → Branch → PR.
 
-## FAQ
-- **Q:** Does it support Windows nodes?  
-  A: Not officially; only Linux/macOS (WSL works).
-- **Q:** How is audit handled?  
-  A: All interactions are logged to `~/.hermes/logs/nodes-audit.log` and retained per `audit_retention_days`.
-
 ## Related
-- **[hermes‑nodes](`github.com/blaspat/hermes-nodes`):** Remote node binary.
-- **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
+
+- **[hermes-nodes](https://github.com/blaspat/hermes-nodes):** Remote node binary (run on each node machine).
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent):** Core framework.
 
 ---
-License: [MIT](LICENSE) | Author: © 2026 Blasius User
+
+License: MIT
