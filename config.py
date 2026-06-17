@@ -76,7 +76,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from hermes_nodes_plugin.errors import ConfigError
+from .errors import ConfigError
 
 # ---------------------------------------------------------------------------
 # Constants

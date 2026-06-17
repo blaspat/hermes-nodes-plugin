@@ -66,10 +66,10 @@ import json
 import sys
 from typing import Any
 
-from hermes_nodes_plugin.config import load_config
-from hermes_nodes_plugin.env import ensure_fernet_key_in_env
-from hermes_nodes_plugin.errors import ConfigError, TokenStoreError
-from hermes_nodes_plugin.tokens import (
+from .config import load_config
+from .env import ensure_fernet_key_in_env
+from .errors import ConfigError, TokenStoreError
+from .tokens import (
     TokenRecord,
     token_store_from_config,
 )

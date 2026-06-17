@@ -84,10 +84,10 @@ if TYPE_CHECKING:
     from hermes_nodes_plugin.registry import NodeRegistry
     from hermes_nodes_plugin.tokens import TokenStore
 
-from hermes_nodes_plugin.audit import default_audit_writer
-from hermes_nodes_plugin.config import load_config
-from hermes_nodes_plugin.errors import ConfigError, TokenStoreError
-from hermes_nodes_plugin.tokens import token_store_from_config
+from .audit import default_audit_writer
+from .config import load_config
+from .errors import ConfigError, TokenStoreError
+from .tokens import token_store_from_config
 
 
 logger = logging.getLogger(__name__)

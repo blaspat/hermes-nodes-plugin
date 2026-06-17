@@ -64,11 +64,11 @@ from typing import Any, Callable
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from hermes_nodes_plugin.config import NodeServerConfig
-from hermes_nodes_plugin.errors import TokenStoreError
-from hermes_nodes_plugin.ratelimit import _RateLimiter
-from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
-from hermes_nodes_plugin.tokens import TokenStore, token_store_from_config
+from .config import NodeServerConfig
+from .errors import TokenStoreError
+from .ratelimit import _RateLimiter
+from .registry import NodeConnection, NodeRegistry
+from .tokens import TokenStore, token_store_from_config
 
 logger = logging.getLogger(__name__)
 

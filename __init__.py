@@ -67,11 +67,11 @@ def register(ctx) -> None:
     # actually fires the event. Keeps register() free of fastapi/pydantic.
 
     async def _on_session_start_lazy(session_id: str = "") -> None:
-        from hermes_nodes_plugin.lifecycle import _on_session_start
+        from .lifecycle import _on_session_start
         await _on_session_start()
 
     async def _on_session_end_lazy(session_id: str = "") -> None:
-        from hermes_nodes_plugin.lifecycle import _on_session_end
+        from .lifecycle import _on_session_end
         await _on_session_end()
 
     try:
@@ -90,11 +90,11 @@ def register(ctx) -> None:
     # silently aborted tool registration too).
 
     def _setup_node_subcommand_lazy(subparser) -> None:
-        from hermes_nodes_plugin.cli import setup_node_cli
+        from .cli import setup_node_cli
         setup_node_cli(subparser)
     
     def _node_handler_lazy(args) -> None:
-        from hermes_nodes_plugin.cli import node_command
+        from .cli import node_command
         node_command(args)
 
     try:
@@ -125,7 +125,7 @@ def register(ctx) -> None:
     # Separated per the Hermes plugin guide structure.
 
     try:
-        from hermes_nodes_plugin import schemas, tools
+        from . import schemas, tools
 
         for name, schema in schemas.SCHEMAS.items():
             handler = getattr(tools, name)
@@ -182,7 +182,7 @@ def register(ctx) -> None:
                 asyncio.set_event_loop(loop)
                 try:
                     with contextlib.suppress(Exception):
-                        from hermes_nodes_plugin.lifecycle import _on_session_start
+                        from .lifecycle import _on_session_start
 
                         loop.run_until_complete(_on_session_start())
                         log.info(

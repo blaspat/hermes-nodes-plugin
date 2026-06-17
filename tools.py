@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 # runtime, but the type-checker still wants a real definition.
 # TYPE_CHECKING is False at runtime, so this import never executes.
 if TYPE_CHECKING:
-    from hermes_nodes_plugin.registry import NodeConnection, NodeRegistry
+    from .registry import NodeConnection, NodeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def node_exec(
         return json.dumps({"error": "node_exec: command must be a non-empty string"})
 
     try:
-        from hermes_nodes_plugin.environment import (
+        from .environment import (
             DEFAULT_EXEC_TIMEOUT_SECONDS,
             NodeEnvironment,
         )
@@ -127,7 +127,7 @@ async def node_read(
         return json.dumps({"error": "node_read: path must be a non-empty string"})
 
     try:
-        from hermes_nodes_plugin.environment import (
+        from .environment import (
             DEFAULT_EXEC_TIMEOUT_SECONDS,
             NodeEnvironment,
         )
@@ -185,7 +185,7 @@ async def node_write(
         return json.dumps({"error": "node_write: path must be a non-empty string"})
 
     try:
-        from hermes_nodes_plugin.environment import (
+        from .environment import (
             DEFAULT_EXEC_TIMEOUT_SECONDS,
             MAX_FILE_BYTES,
             NodeEnvironment,
@@ -259,7 +259,7 @@ def _resolve_registry(override: "NodeRegistry | None") -> "NodeRegistry":
         return override
     # Imported here rather than at module top to avoid the
     # ``lifecycle → config → yaml`` chain in tools-only tests.
-    from hermes_nodes_plugin.lifecycle import get_default_runner
+    from .lifecycle import get_default_runner
 
     return get_default_runner()._registry  # type: ignore[attr-defined]
 

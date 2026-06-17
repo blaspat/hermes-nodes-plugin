@@ -65,7 +65,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import WebSocket
 
-from hermes_nodes_plugin.audit import (
+from .audit import (
     AuditWriter,
     STATUS_ERROR,
     STATUS_NOT_CONNECTED,
@@ -73,12 +73,12 @@ from hermes_nodes_plugin.audit import (
     STATUS_TIMEOUT,
     default_audit_writer,
 )
-from hermes_nodes_plugin.errors import (
+from .errors import (
     NodeExecutionError,
     NodeNotConnectedError,
     NodeReadError,
 )
-from hermes_nodes_plugin.registry import (
+from .registry import (
     NodeRegistry,
     _WaiterCancelled,
 )

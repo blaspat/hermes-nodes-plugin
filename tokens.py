@@ -57,7 +57,7 @@ from typing import Any, Mapping
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from hermes_nodes_plugin.errors import TokenStoreError
+from .errors import TokenStoreError
 
 # Token is 32 random bytes (256 bits) encoded base64url, matching
 # REQUIREMENTS FR-1.1. 32 bytes matches the entropy floor recommended
