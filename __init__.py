@@ -83,37 +83,27 @@ def register(ctx) -> None:
     # ------------------------------------------------------------------ #
     # 2. CLI subcommand — guarded separately                               #
     # ------------------------------------------------------------------ #
-    # register_cli_command does not exist on PluginContext in the current
-    # Hermes version. Isolating it here means a missing or broken CLI
-    # registration cannot prevent tools from loading (Bug fix: previously
-    # the whole try/except shared one block so an AttributeError here
-    # silently aborted tool registration too).
+    # CLI subcommand — guarded separately so a broken CLI registration
+    # cannot prevent tools from loading.
 
     def _setup_node_subcommand_lazy(subparser) -> None:
         from .cli import setup_node_cli
         setup_node_cli(subparser)
-    
+
     def _node_handler_lazy(args) -> None:
         from .cli import node_command
         node_command(args)
 
     try:
-        register_cli = getattr(ctx, "register_cli_command", None)
-        if register_cli is not None:
-            register_cli(
-                "node",
-                help=(
-                    "Manage paired hermes-nodes (WSS node server). "
-                    "Subcommands: pair, list, revoke, status."
-                ),
-                setup_fn=_setup_node_subcommand_lazy,
-                handler_fn=_node_handler_lazy,
-            )
-        else:
-            log.debug(
-                "hermes-nodes-plugin: ctx.register_cli_command not available "
-                "in this Hermes version — 'hermes node' subcommand skipped."
-            )
+        ctx.register_cli_command(
+            "node",
+            help=(
+                "Manage paired hermes-nodes (WSS node server). "
+                "Subcommands: pair, list, revoke, status."
+            ),
+            setup_fn=_setup_node_subcommand_lazy,
+            handler_fn=_node_handler_lazy,
+        )
     except Exception as exc:
         log.warning("hermes-nodes-plugin: CLI registration failed: %s", exc)
 
