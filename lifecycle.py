@@ -63,7 +63,6 @@ gets a clear "missing HERMES_NODES_TOKEN_KEY" error.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 from datetime import timedelta
@@ -483,100 +482,6 @@ def get_default_runner() -> ServerRunner:
     return _default_runner
 
 
-async def reset_default_runner() -> None:
-    """Clear the singleton (tests only), awaiting its drain.
-
-    Issue #20: the previous implementation synchronously cancelled
-    the runner's task without awaiting it. The cancel is a *signal*
-    — the actual shutdown is async, so a test that called
-    ``reset_default_runner`` and then immediately re-built a runner
-    could race the previous uvicorn's socket release and hit
-    ``EADDRINUSE``.
-
-    This coroutine drains first (so the port is actually free) and
-    then clears the singleton. Async tests should ``await`` it.
-
-    If there is no running runner, this is a cheap no-op.
-    """
-    global _default_runner
-    if _default_runner is None:
-        return
-    runner = _default_runner
-    _default_runner = None
-    if not runner.is_running:
-        return
-    # 2s is enough for a clean drain (uvicorn propagates a close
-    # frame to active WebSockets, which usually completes in <100ms
-    # on loopback). If the drain doesn't finish in time, the runner
-    # is forcibly cancelled — see ServerRunner.drain.
-    await runner.drain(timeout=2.0)
-
-
-def reset_default_runner_sync(timeout: float = 5.0) -> None:
-    """Sync shim for :func:`reset_default_runner` (issue #20).
-
-    Some test paths (fixture teardown, session cleanup) call reset
-    from synchronous code that is *not* itself running inside a
-    coroutine. For that common case, the shim builds a fresh event
-    loop via :func:`asyncio.run` and drives the runner's drain on
-    it. By the time the shim returns, uvicorn is fully unwound
-    and the port is free.
-
-    This shim **must not be called from inside a running event
-    loop** (e.g. from within an async test that has its own
-    ``asyncio.run`` already in flight). The proper API for that
-    context is :func:`reset_default_runner` — `await` it. If we
-    detect this misuse we raise :class:`RuntimeError` with a
-    clear message rather than deadlocking the loop.
-
-    The shim is safe to call when there is no running runner
-    (returns immediately).
-
-    The ``timeout`` is independent of the runner's own drain
-    timeout: if the drain doesn't complete in ``timeout`` seconds
-    we surface a :class:`RuntimeError` rather than silently
-    leaking uvicorn into the next test.
-    """
-    global _default_runner
-    if _default_runner is None or not _default_runner.is_running:
-        # Either no runner yet, or the async test path already
-        # cleared it. No work to do.
-        return
-    runner = _default_runner
-    _default_runner = None
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        # No running loop — drive the drain on a fresh loop. This
-        # is the common sync-test path. ``asyncio.run`` builds a
-        # loop, runs the coroutine, and tears the loop down
-        # cleanly. By the time we return, the uvicorn task is
-        # fully unwound and the port is released.
-        try:
-            asyncio.run(runner.drain(timeout=2.0))
-        except Exception as exc:
-            # Drain failed — the runner is still alive and
-            # registered. Restore the global so a retry or
-            # a diagnostic call can find it.
-            _default_runner = runner
-            raise RuntimeError(
-                f"reset_default_runner_sync: drain failed: {exc!r}"
-            ) from exc
-        return
-
-    # We're inside a running loop. The sync shim cannot block the
-    # loop's thread waiting for a coroutine on the same loop — the
-    # coroutine would never get scheduled. Tell the caller to use
-    # the async path.
-    raise RuntimeError(
-        "reset_default_runner_sync called from inside a running "
-        "event loop. Use `await reset_default_runner()` instead — "
-        "the sync shim cannot wait for a coroutine on the same loop "
-        "without deadlocking."
-    )
-
-
 # ---------------------------------------------------------------------------
 # Hook callbacks (bound by register() in __init__.py)
 # ---------------------------------------------------------------------------
@@ -662,43 +567,13 @@ async def _on_session_end() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI subcommand (Task 2.10 — real surface lives in hermes_nodes_plugin.cli)
 # ---------------------------------------------------------------------------
-
-
-def setup_node_subcommand(subparser: argparse.ArgumentParser) -> None:
-    """Argparse setup for ``hermes node`` — delegates to :mod:`cli`.
-
-    The real ``pair`` / ``list`` / ``revoke`` / ``status`` argparse
-    tree lives in :func:`hermes_nodes_plugin.cli.setup_node_cli`
-    (Task 2.10). This shim remains so the import in
-    :mod:`hermes_nodes_plugin.__init__` and the existing test
-    (``test_register_adds_node_cli_subcommand``) keep working
-    without modification.
-    """
-    from hermes_nodes_plugin.cli import setup_node_cli
-
-    setup_node_cli(subparser)
-
-
-def _node_command_dispatch(args: argparse.Namespace) -> int:
-    """Default dispatch for ``hermes node`` subcommands.
-
-    Kept as a thin wrapper for backward compat with any code that
-    imports it directly. The real dispatch lives in
-    :func:`hermes_nodes_plugin.cli.node_command`.
-    """
-    from hermes_nodes_plugin.cli import node_command
-
-    return node_command(args)
-
+# __all__ — published API for the lifecycle module
+# ---------------------------------------------------------------------------
 
 __all__ = [
     "ServerRunner",
     "get_default_runner",
-    "reset_default_runner",
-    "reset_default_runner_sync",
     "_on_session_start",
     "_on_session_end",
-    "setup_node_subcommand",
 ]
