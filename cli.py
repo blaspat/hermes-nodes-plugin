@@ -61,7 +61,6 @@ Design notes
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from typing import Any
@@ -82,17 +81,6 @@ STATE_CONNECTED = "connected"
 STATE_DISCONNECTED = "disconnected"
 STATE_NEVER_SEEN = "never_seen"
 STATE_REVOKED = "revoked"
-
-# Result codes returned by :func:`_close_active_connection_strict`
-# and consumed by :func:`_cmd_revoke` to decide exit codes and
-# stderr messages. Strings rather than an enum so the helper stays
-# dependency-free and the values are easy to assert against in
-# tests.
-CLOSE_RESULT_CLOSED = "closed"
-CLOSE_RESULT_NO_CONNECTION = "no_connection"
-CLOSE_RESULT_TIMED_OUT = "timed_out"
-CLOSE_RESULT_ERROR = "error"
-
 
 # ---------------------------------------------------------------------------
 # Argparse setup — bound to ``hermes node <subcommand>``
@@ -163,61 +151,17 @@ def setup_node_cli(subparser: argparse.ArgumentParser) -> None:
     # --- revoke ------------------------------------------------------------
     p_revoke = subs.add_parser(
         "revoke",
-        help="Revoke a node's token and drop any active connection.",
+        help="Delete a node entry from the store.",
         description=(
-            "Mark the token revoked in the encrypted store and (by "
-            "default) close the live WebSocket if one is registered. "
-            "The node cannot reconnect with the old token; pair it "
-            "again to issue a new one. Use --strict to wait for the "
-            "close handshake to ACK and fail loudly if it does not, "
-            "or --no-close to skip the network close entirely (the "
-            "token is still revoked in the store)."
+            "Hard-delete the token record for NAME from the encrypted "
+            "store. The node cannot reconnect after this; run `hermes node "
+            "pair --name <name>` to add it again."
         ),
     )
     p_revoke.add_argument(
         "--name",
         required=True,
-        help="Name of the node to revoke (must match an existing pair).",
-    )
-    close_mode = p_revoke.add_mutually_exclusive_group()
-    close_mode.add_argument(
-        "--strict",
-        action="store_true",
-        dest="strict_close",
-        help=(
-            "Wait for the WebSocket close handshake to ACK before "
-            "returning. Exits non-zero with a stderr message if the "
-            "close did not complete within --close-timeout seconds. "
-            "Use this for sensitive revokes (stolen token, forced "
-            "re-pair) where you want to see the disconnect, not just "
-            "trust that the store flag has flipped."
-        ),
-    )
-    close_mode.add_argument(
-        "--no-close",
-        action="store_true",
-        dest="no_close",
-        help=(
-            "Skip the WebSocket close attempt entirely. The store-"
-            "level revoke is still authoritative; the live socket, "
-            "if any, will be dropped in the background and the "
-            "laptop's connection will close whenever its own "
-            "heartbeat / read times out. Useful in tests and CI "
-            "where the network is mocked."
-        ),
-    )
-    p_revoke.add_argument(
-        "--close-timeout",
-        type=float,
-        default=2.0,
-        metavar="SECONDS",
-        dest="close_timeout",
-        help=(
-            "Maximum time to wait for the WebSocket close handshake "
-            "in --strict mode. The token is already revoked at that "
-            "point; a timeout just means the client did not ACK in "
-            "time. Default: 2.0."
-        ),
+        help="Name of the node to delete.",
     )
 
     # --- status (kept from 2.6) -------------------------------------------
@@ -306,10 +250,10 @@ def _cmd_pair(args: argparse.Namespace) -> int:
       pair still completes because we mirror the key into
       :data:`os.environ` regardless
 
-    ``--force`` revokes the existing record first if one is paired
-    under the same name and not yet revoked. Revoked-on-disk records
-    do not block re-pair (TokenStore.create already allows that),
-    so the force flag is only needed against *live* duplicates.
+    ``--force`` hard-deletes any existing record under the same name
+    before pairing a fresh one. Silently no-op on names never paired
+    (delete() is idempotent). Using delete() rather than revoke()
+    avoids leaving ghost revoked rows in the store.
     """
     name: str = args.name.strip()
     if not name:
@@ -355,10 +299,11 @@ def _cmd_pair(args: argparse.Namespace) -> int:
     store = token_store_from_config(config)
 
     if args.force:
-        # Silently no-op if there's nothing to revoke — matches the
-        # idempotent revoke() contract so a --force on a fresh name
-        # doesn't error out.
-        store.revoke(name)
+        # Hard-delete any existing record before pairing. Silently
+        # no-op if the name was never paired (delete() is idempotent).
+        # Using delete() rather than revoke() avoids leaving ghost rows
+        # in the store on repeated force-pairs.
+        store.delete(name)
 
     try:
         token = store.create(name)
@@ -377,7 +322,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
     print("", file=sys.stderr)
     print("Run this on the laptop:", file=sys.stderr)
     print(
-        f"  hermes-node pair --server <host:port>/ws/nodes --token {token} --name {name}",
+        f"  hermes-node pair --server <host:port> --token {token} --name {name}",
         file=sys.stderr,
     )
     return 0
@@ -442,33 +387,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_revoke(args: argparse.Namespace) -> int:
-    """Revoke the named node's token and drop the live connection.
+    """Delete the named node's token record from the store.
 
-    FR-1.4: "deletes the token, drops any active connection, and the
-    node cannot reconnect." We mark the store record revoked and,
-    depending on the flags, also close the live WebSocket.
-
-    Modes (mutually exclusive via argparse):
-
-    * **Default (no flag).** Best-effort close: send the close frame
-      and return immediately. The connection handler's ``finally``
-      block clears the registry when the client disconnects. The
-      store flag is the source of truth for "this token is dead";
-      the close is a courtesy that makes the disconnect immediate.
-      Exits 0 unconditionally.
-    * **``--strict``.** Send the close frame and wait up to
-      ``--close-timeout`` seconds for the client's ACK. Exits 0 on
-      a clean close or when there is no live connection (nothing
-      to wait for; the store flag is still authoritative). Exits 1
-      with a stderr message if the close timed out or we couldn't
-      reach the registry.
-    * **``--no-close``.** Skip the network close entirely. Useful
-      in tests / CI where the network is mocked and any close
-      attempt would just fail spuriously. Exits 0.
-
-    Unknown name is a no-op (TokenStore.revoke is idempotent) and
-    exit 0 — scripts that retry on transient failures shouldn't
-    blow up on a missing name.
+    Hard-delete removes the record entirely (unlike revoke which only
+    set ``revoked=true``). The node cannot reconnect after this;
+    run ``hermes node pair --name <name>`` to add it again.
+    Deleting an unknown name is a no-op and returns 0.
     """
     name: str = args.name.strip()
     if not name:
@@ -477,46 +401,8 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
 
     config = load_config()
     store = token_store_from_config(config)
-    store.revoke(name)
-
-    if args.no_close:
-        # Explicit skip — do not touch the network. Store flag is
-        # already authoritative; the connection will drop on the
-        # client's next read timeout.
-        print(f"revoked: {name} (no-close)")
-        return 0
-
-    if args.strict_close:
-        result = _close_active_connection_strict(
-            name, timeout=args.close_timeout
-        )
-        if result == CLOSE_RESULT_TIMED_OUT:
-            print(
-                f"error: revoke of {name!r} timed out waiting for "
-                f"the WebSocket close handshake (>{args.close_timeout}s). "
-                "The token is revoked in the store; the live connection "
-                "did not acknowledge the close in time.",
-                file=sys.stderr,
-            )
-            return 1
-        if result == CLOSE_RESULT_ERROR:
-            print(
-                f"error: revoke of {name!r} could not reach the "
-                "node registry. The token is revoked in the store; "
-                "the live connection state is unknown.",
-                file=sys.stderr,
-            )
-            return 1
-        # ``closed`` and ``no_connection`` both exit 0 — either we
-        # observed a clean close, or there was nothing to close
-        # (store flag is still authoritative).
-        print(f"revoked: {name} (close: {result})")
-        return 0
-
-    # Default path: best-effort, fire-and-forget. The close attempt
-    # is best-effort; we do not surface its result to the operator.
-    _close_active_connection(name)
-    print(f"revoked: {name}")
+    store.delete(name)
+    print(f"deleted: {name}")
     return 0
 
 
@@ -597,159 +483,6 @@ def _connected_names() -> set[str]:
         return set()
 
 
-def _close_active_connection(name: str) -> None:
-    """Close the live WebSocket for ``name`` if one is registered.
-
-    Best-effort: any failure (no runner, no loop, connection already
-    gone) is swallowed. The store-level revoke is the source of
-    truth for "this token no longer works" — closing the socket is
-    a courtesy that makes the disconnect immediate rather than
-    waiting for the next heartbeat timeout.
-    """
-    try:
-        from hermes_nodes_plugin.lifecycle import _default_runner
-    except Exception:
-        return
-
-    runner = _default_runner
-    if runner is None:
-        return
-
-    registry = getattr(runner, "_registry", None)
-    if registry is None:
-        return
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None and loop.is_running():
-        return
-
-    async def _close() -> None:
-        conn = await registry.get(name)
-        if conn is not None:
-            try:
-                await conn.websocket.close()
-            except Exception:
-                # Best-effort. The unregister fires from the
-                # connection handler's ``finally`` block regardless.
-                pass
-
-    try:
-        asyncio.run(_close())
-    except Exception:
-        pass
-
-
-def _close_active_connection_strict(
-    name: str, timeout: float
-) -> str:
-    """Close the live WebSocket for ``name`` and wait for the ACK.
-
-    Returns one of the :data:`CLOSE_RESULT_*` strings so the caller
-    can decide exit codes and stderr messages. Unlike
-    :func:`_close_active_connection` (best-effort, fire-and-forget,
-    used by the default revoke path), this version:
-
-    * waits up to ``timeout`` seconds for the close handshake
-    * surfaces distinct outcomes (``no_connection`` vs
-      ``closed`` vs ``timed_out`` vs ``error``) instead of swallowing
-    * does not swallow ``TimeoutError`` — it converts it to
-      :data:`CLOSE_RESULT_TIMED_OUT`
-
-    Failure modes (in evaluation order):
-
-    1. **No plugin loaded** (``get_default_runner`` raises
-       :class:`ConfigError` or :class:`TokenStoreError`, or the
-       runner has no ``_registry``) → :data:`CLOSE_RESULT_ERROR`.
-       The store flag is still authoritative, but we cannot
-       observe the live socket.
-    2. **Already inside a running event loop** —
-       :func:`asyncio.get_event_loop` succeeds and
-       ``loop.is_running()`` is true. Revoke was called from inside
-       the plugin's own loop, which means the helper cannot run its
-       own :func:`asyncio.run`. We can't make a clean handshake
-       from here → :data:`CLOSE_RESULT_ERROR`.
-    3. **No live connection for ``name``** — registry returns
-       ``None`` → :data:`CLOSE_RESULT_NO_CONNECTION`. Exits 0 in
-       the caller (nothing to wait for; store flag is still
-       authoritative).
-    4. **Close succeeds within ``timeout``** →
-       :data:`CLOSE_RESULT_CLOSED`.
-    5. **Close does not ACK within ``timeout``** →
-       :data:`CLOSE_RESULT_TIMED_OUT`. Exits 1 in the caller.
-
-    Args:
-        name: The paired node name. Must match an existing pair
-            (the store-level revoke has already run by the time
-            this helper is called).
-        timeout: Maximum seconds to wait for the close handshake.
-            Caller passes ``--close-timeout`` (default 2.0).
-
-    Returns:
-        One of :data:`CLOSE_RESULT_CLOSED`,
-        :data:`CLOSE_RESULT_NO_CONNECTION`,
-        :data:`CLOSE_RESULT_TIMED_OUT`, :data:`CLOSE_RESULT_ERROR`.
-
-    Notes:
-        The timeout is enforced via :func:`asyncio.wait_for`. The
-        close coroutine itself is wrapped so that a timeout does
-        not leak the underlying task. We do **not** attempt to
-        forcibly cancel the in-flight close — FastAPI/Starlette
-        handles that on its own when the registry unregisters the
-        connection from the handler's ``finally`` block.
-    """
-    try:
-        from hermes_nodes_plugin.lifecycle import get_default_runner
-    except Exception:
-        return CLOSE_RESULT_ERROR
-
-    try:
-        runner = get_default_runner()
-    except Exception:
-        # ConfigError, TokenStoreError, and any unexpected runner-
-        # init failure. Treat as "cannot reach the registry" so
-        # the caller exits 1 with a stderr message; the store flag
-        # is still authoritative.
-        return CLOSE_RESULT_ERROR
-
-    registry = getattr(runner, "_registry", None)
-    if registry is None:
-        return CLOSE_RESULT_ERROR
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None and loop.is_running():
-        # We're already inside the plugin's loop. Cannot run a
-        # second loop from here.
-        return CLOSE_RESULT_ERROR
-
-    async def _close() -> str:
-        conn = await registry.get(name)
-        if conn is None:
-            return CLOSE_RESULT_NO_CONNECTION
-        try:
-            await asyncio.wait_for(conn.websocket.close(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return CLOSE_RESULT_TIMED_OUT
-        except Exception:
-            # The connection handler's finally block will unregister
-            # on its own. We don't propagate the underlying
-            # exception type because the caller only branches on
-            # the four result codes.
-            return CLOSE_RESULT_ERROR
-        return CLOSE_RESULT_CLOSED
-
-    try:
-        return asyncio.run(_close())
-    except Exception:
-        # asyncio.run failures (e.g. loop policy misconfigured) —
-        # treat the same as "could not reach the registry".
-        return CLOSE_RESULT_ERROR
-
 def main() -> None:
     """Standalone entrypoint for the ``hermes-node`` script.
 
@@ -775,6 +508,4 @@ __all__ = [
     # Internal helpers exported for unit tests:
     "_format_row",
     "_connected_names",
-    "_close_active_connection",
-    "_close_active_connection_strict",
 ]

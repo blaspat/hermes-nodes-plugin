@@ -16,11 +16,10 @@ Design choices, with rationale:
     must be re-encrypted on every mutation. For ≤ a few hundred nodes
     the file is small and re-encryption is sub-millisecond.
 
-  * **Revoked entries are kept on disk, not deleted.** Setting
-    ``revoked=true`` rather than ``del`` preserves the audit trail (a
-    node can't reconnect with a stale token even if the file is
-    restored from backup) and keeps the JSON append-friendly. A
-    separate prune pass can drop old revoked entries later.
+  * **Hard delete.** ``revoke()`` marks ``revoked=true``; a separate
+    ``delete()`` removes the record entirely. Revoked entries are
+    kept on disk by default to preserve the audit trail; the
+    ``delete()`` call is for when you want a clean slate.
 
   * **File-level write lock via ``fcntl``.** Two concurrent
     ``hermes node pair`` invocations on the same host would otherwise
@@ -424,6 +423,28 @@ class TokenStore:
             # revoke of a name we don't know is a safe no-op.
             _ = found
             return records
+
+        self._mutate(_write)
+
+    def delete(self, name: str) -> None:
+        """Hard-delete the token record for ``name`` from the store.
+
+        Unlike :meth:`revoke` (which sets ``revoked=true`` and keeps the
+        record on disk), ``delete`` removes the record entirely.
+        ``validate(name, token)`` will return ``False`` after delete.
+        Deleting an unknown name is a no-op (idempotent).
+
+        Args:
+            name: Node name to delete.
+
+        Raises:
+            TokenStoreError: ``name`` fails the character / length
+                policy, or the store can't be written.
+        """
+        name = _validate_name(name)
+
+        def _write(records: list[_StoredRecord]) -> list[_StoredRecord]:
+            return [rec for rec in records if rec.name != name]
 
         self._mutate(_write)
 
