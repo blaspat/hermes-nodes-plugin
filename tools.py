@@ -1,10 +1,15 @@
 """Tool handlers — the code that runs when the LLM calls each tool.
 
-All four tools are ``def`` (not ``async def``).  The async environment calls
-(WS-based I/O with the WSS server) are bridged via ``asyncio.run()`` inside
-each handler.  This avoids the ``is_async`` flag mismatch that caused
-``async def`` tools to receive the args-dict as a single positional argument
-instead of unpacked kwargs.
+Handler signature convention (per Hermes framework):
+    def handler(args, **kw) -> str:
+        ...
+
+The framework passes ``args`` as a dict containing all tool arguments,
+and ``**kw`` for forward-compatibility kwargs. Each handler extracts
+fields from ``args`` and calls the internal implementation.
+
+Async environment calls (WS-based I/O with the WSS server) are bridged
+via ``asyncio.run()`` inside the impl functions.
 """
 
 from __future__ import annotations
@@ -16,17 +21,16 @@ from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
-# Type-checker-only imports (same reasoning as before).
 if TYPE_CHECKING:
     from .registry import NodeConnection, NodeRegistry
 
 
 # ---------------------------------------------------------------------------
-# Tool implementations
+# Tool implementations (called by the wrapper handlers below)
 # ---------------------------------------------------------------------------
 
 
-def node_exec(
+def _node_exec_impl(
     target: str,
     command: str,
     *,
@@ -34,7 +38,6 @@ def node_exec(
     env: dict[str, str] | None = None,
     timeout_ms: int | None = None,
     registry: "NodeRegistry | None" = None,
-    **kwargs: Any,
 ) -> str:
     """Run ``command`` on the named node."""
     if not target:
@@ -62,13 +65,12 @@ def node_exec(
         return json.dumps({"error": f"node_exec failed: {e}"})
 
 
-def node_read(
+def _node_read_impl(
     target: str,
     path: str,
     *,
     timeout_ms: int | None = None,
     registry: "NodeRegistry | None" = None,
-    **kwargs: Any,
 ) -> str:
     """Read a file from the named node."""
     if not target:
@@ -96,7 +98,7 @@ def node_read(
         return json.dumps({"error": f"node_read failed: {e}"})
 
 
-def node_write(
+def _node_write_impl(
     target: str,
     path: str,
     content: str,
@@ -104,7 +106,6 @@ def node_write(
     mode: str = "overwrite",
     timeout_ms: int | None = None,
     registry: "NodeRegistry | None" = None,
-    **kwargs: Any,
 ) -> str:
     """Write text to a file on the named node."""
     if not target:
@@ -144,9 +145,9 @@ def node_write(
         return json.dumps({"error": f"node_write failed: {e}"})
 
 
-def node_list(
+def _node_list_impl(
+    *,
     registry: "NodeRegistry | None" = None,
-    **kwargs: Any,
 ) -> str:
     """List paired nodes with their current connection state."""
     try:
@@ -158,6 +159,53 @@ def node_list(
         })
     except Exception as e:
         return json.dumps({"error": f"node_list failed: {e}"})
+
+
+# ---------------------------------------------------------------------------
+# Hermes handler wrappers
+# ---------------------------------------------------------------------------
+# Framework signature: handler(args: dict, **kw) -> str
+# args contains the tool-arg dict from the LLM call.
+# ---------------------------------------------------------------------------
+
+
+def node_exec(args: dict, **kw: Any) -> str:
+    """Hermes tool handler — dispatches to _node_exec_impl."""
+    return _node_exec_impl(
+        target=args.get("target"),
+        command=args.get("command"),
+        cwd=args.get("cwd"),
+        env=args.get("env"),
+        timeout_ms=args.get("timeout_ms"),
+        registry=args.get("registry"),
+    )
+
+
+def node_read(args: dict, **kw: Any) -> str:
+    """Hermes tool handler — dispatches to _node_read_impl."""
+    return _node_read_impl(
+        target=args.get("target"),
+        path=args.get("path"),
+        timeout_ms=args.get("timeout_ms"),
+        registry=args.get("registry"),
+    )
+
+
+def node_write(args: dict, **kw: Any) -> str:
+    """Hermes tool handler — dispatches to _node_write_impl."""
+    return _node_write_impl(
+        target=args.get("target"),
+        path=args.get("path"),
+        content=args.get("content"),
+        mode=args.get("mode", "overwrite"),
+        timeout_ms=args.get("timeout_ms"),
+        registry=args.get("registry"),
+    )
+
+
+def node_list(args: dict, **kw: Any) -> str:
+    """Hermes tool handler — dispatches to _node_list_impl."""
+    return _node_list_impl(registry=args.get("registry"))
 
 
 # ---------------------------------------------------------------------------
