@@ -646,7 +646,7 @@ def _resolve_audit_config(env: Mapping[str, str] | None = None) -> AuditConfig:
     # avoid a circular import: ``config`` reads the constants
     # below back from this module (``audit``), so the top-level
     # ``from config import ...`` would deadlock.
-    from hermes_nodes_plugin.config import NodeServerConfig, load_config
+    from .config import NodeServerConfig, load_config
 
     try:
         server_cfg = load_config(env=env)
