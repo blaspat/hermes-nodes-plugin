@@ -66,11 +66,11 @@ def register(ctx) -> None:
     # Thin wrappers that defer the lifecycle import until the gateway
     # actually fires the event. Keeps register() free of fastapi/pydantic.
 
-    async def _on_session_start_lazy(session_id: str = "") -> None:
+    async def _on_session_start_lazy(session_id: str = "", **kwargs) -> None:
         from .lifecycle import _on_session_start
         await _on_session_start()
 
-    async def _on_session_end_lazy(session_id: str = "") -> None:
+    async def _on_session_end_lazy(session_id: str = "", **kwargs) -> None:
         from .lifecycle import _on_session_end
         await _on_session_end()
 
@@ -125,6 +125,9 @@ def register(ctx) -> None:
                 "node_write": "✍️",
                 "node_list": "📋",
             }.get(name, "🔧")
+            # All tools are plain def (not async def). The async environment
+            # calls (WS-based I/O) are bridged via asyncio.run() inside each
+            # handler. is_async defaults to False — no flag needed.
             ctx.register_tool(
                 name=name,
                 toolset="hermes_nodes",

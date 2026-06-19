@@ -79,9 +79,9 @@ if TYPE_CHECKING:
     # runtime's plugin loader. The runtime imports live next to
     # the functions that need them.
     import uvicorn  # noqa: F401
-    from hermes_nodes_plugin.config import NodeServerConfig
-    from hermes_nodes_plugin.registry import NodeRegistry
-    from hermes_nodes_plugin.tokens import TokenStore
+    from .config import NodeServerConfig
+    from .registry import NodeRegistry
+    from .tokens import TokenStore
 
 from .audit import default_audit_writer
 from .config import load_config
@@ -177,7 +177,7 @@ class ServerRunner:
         # imports fastapi/pydantic/uvicorn, so we defer it to the
         # point where we actually need the ASGI stack.
         if self._app is None:
-            from hermes_nodes_plugin.server import create_app
+            from .server import create_app
 
             self._app = create_app(
                 token_store=self._token_store,
@@ -377,7 +377,7 @@ class ServerRunner:
         swallowed — one dead socket must not poison the sweep loop
         or take the server down.
         """
-        from hermes_nodes_plugin.server import _safe_close
+        from .server import _safe_close
 
         stale_after = timedelta(seconds=self._config.heartbeat_stale_seconds)
         interval = self._config.heartbeat_sweep_interval_seconds
@@ -461,7 +461,7 @@ def _build_default_runner() -> ServerRunner:
     # its native-extension paths, eager import would brick the
     # process. We pay the import cost here, only when a runner is
     # actually being built (typically on first session start).
-    from hermes_nodes_plugin.registry import NodeRegistry
+    from .registry import NodeRegistry
 
     config = load_config()
     store = token_store_from_config(config)
@@ -559,7 +559,7 @@ async def _on_session_end() -> None:
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("hermes-nodes: runner.drain() failed: %s", exc)
     try:
-        from hermes_nodes_plugin.audit import reset_default_audit_writer
+        from .audit import reset_default_audit_writer
 
         reset_default_audit_writer()
     except Exception as exc:  # pragma: no cover — defensive
