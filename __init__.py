@@ -125,6 +125,9 @@ def register(ctx) -> None:
                 "node_write": "✍️",
                 "node_list": "📋",
             }.get(name, "🔧")
+            # All tools are plain def (not async def). The async environment
+            # calls (WS-based I/O) are bridged via asyncio.run() inside each
+            # handler. is_async defaults to False — no flag needed.
             ctx.register_tool(
                 name=name,
                 toolset="hermes_nodes",
