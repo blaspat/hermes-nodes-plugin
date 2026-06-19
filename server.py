@@ -608,6 +608,140 @@ def create_app(
         connected = await registry.list_connected()
         return {"connected_names": [c.name for c in connected]}
 
+    # -------------------------------------------------------------------------
+    # Internal exec endpoint (same host, no token auth — tool runs as the user)
+    # -------------------------------------------------------------------------
+
+    class _ExecRequest(BaseModel):
+        command: str
+        cwd: str | None = None
+        env: dict[str, str] | None = None
+        timeout_ms: int | None = None
+
+    @app.post("/nodes/{node_name}/exec")
+    async def nodes_exec(node_name: str, body: _ExecRequest) -> dict[str, Any]:
+        """Execute a command on a connected node via the internal registry.
+
+        This endpoint exists so that tools running in the same Hermes process
+        can dispatch exec requests without needing the node's pairing token.
+        The WSS server is local (127.0.0.1:6969) and not exposed externally,
+        so no additional auth is required here.
+        """
+        # Look up the live connection in the server's registry
+        conn = await registry.get(node_name)
+        if conn is None:
+            return {"status": "error", "code": 404, "reason": f"node {node_name!r} is not connected"}
+
+        # Use the waiter/future mechanism to await the exec_result
+        request_id = str(uuid.uuid4())
+        timeout_ms = body.timeout_ms or 30_000
+        try:
+            future = await registry.register_waiter(node_name, request_id)
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": f"failed to register waiter: {e}"}
+
+        # Send the exec request over the node's WebSocket
+        exec_payload = {
+            "type": "exec",
+            "id": request_id,
+            "command": body.command,
+        }
+        if body.cwd:
+            exec_payload["cwd"] = body.cwd
+        if body.env:
+            exec_payload["env"] = body.env
+
+        try:
+            await conn.websocket.send_json(exec_payload)
+        except Exception as e:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 500, "reason": f"failed to send exec: {e}"}
+
+        # Wait for the result (or timeout)
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout_ms / 1000.0)
+            return {"status": "ok", "exec_result": result}
+        except asyncio.TimeoutError:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 408, "reason": f"exec timed out after {timeout_ms}ms"}
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": str(e)}
+
+    # -------------------------------------------------------------------------
+    # Internal read endpoint
+    # -------------------------------------------------------------------------
+
+    class _ReadRequest(BaseModel):
+        path: str
+
+    @app.post("/nodes/{node_name}/read")
+    async def nodes_read(node_name: str, body: _ReadRequest) -> dict[str, Any]:
+        conn = await registry.get(node_name)
+        if conn is None:
+            return {"status": "error", "code": 404, "reason": f"node {node_name!r} is not connected"}
+
+        request_id = str(uuid.uuid4())
+        timeout_ms = 30_000
+        try:
+            future = await registry.register_waiter(node_name, request_id)
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": f"failed to register waiter: {e}"}
+
+        try:
+            await conn.websocket.send_json({"type": "read", "id": request_id, "path": body.path})
+        except Exception as e:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 500, "reason": f"failed to send read: {e}"}
+
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout_ms / 1000.0)
+            return {"status": "ok", "read_result": result}
+        except asyncio.TimeoutError:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 408, "reason": f"read timed out after {timeout_ms}ms"}
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": str(e)}
+
+    # -------------------------------------------------------------------------
+    # Internal write endpoint
+    # -------------------------------------------------------------------------
+
+    class _WriteRequest(BaseModel):
+        path: str
+        content: str
+        mode: str = "overwrite"
+
+    @app.post("/nodes/{node_name}/write")
+    async def nodes_write(node_name: str, body: _WriteRequest) -> dict[str, Any]:
+        conn = await registry.get(node_name)
+        if conn is None:
+            return {"status": "error", "code": 404, "reason": f"node {node_name!r} is not connected"}
+
+        request_id = str(uuid.uuid4())
+        timeout_ms = 30_000
+        try:
+            future = await registry.register_waiter(node_name, request_id)
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": f"failed to register waiter: {e}"}
+
+        try:
+            await conn.websocket.send_json({
+                "type": "write", "id": request_id,
+                "path": body.path, "content": body.content, "mode": body.mode,
+            })
+        except Exception as e:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 500, "reason": f"failed to send write: {e}"}
+
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout_ms / 1000.0)
+            return {"status": "ok", "write_result": result}
+        except asyncio.TimeoutError:
+            await registry.unregister_waiter(node_name, request_id)
+            return {"status": "error", "code": 408, "reason": f"write timed out after {timeout_ms}ms"}
+        except Exception as e:
+            return {"status": "error", "code": 500, "reason": str(e)}
+
     return app
 
 
