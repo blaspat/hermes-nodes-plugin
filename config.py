@@ -11,7 +11,7 @@ Keys (file format matches env-var names, minus the ``HERMES_NODES_``
 prefix and lowercased):
 
   * ``host``                      (str)   default ``"127.0.0.1"``
-  * ``port``                      (int)   default ``6969``
+  * ``port``                      (int)   default ``7000``
   * ``tls_cert_path``             (str|None) default ``None``
   * ``tls_key_path``              (str|None) default ``None``
   * ``token_store_path``          (str)   default ``~/.hermes/nodes/tokens.json``
@@ -105,7 +105,7 @@ class NodeServerConfig:
     """
 
     host: str = "127.0.0.1"
-    port: int = 6969
+    port: int = 7000
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     token_store_path: str = DEFAULT_TOKEN_STORE_STR

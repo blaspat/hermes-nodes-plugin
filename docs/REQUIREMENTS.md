@@ -22,7 +22,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 ### FR-2: Connection lifecycle
 
-**FR-2.1** The server accepts inbound WSS connections on the configured port (default 6969), performs TLS, and waits for a `hello` message.
+**FR-2.1** The server accepts inbound WSS connections on the configured port (default 7000), performs TLS, and waits for a `hello` message.
 
 **FR-2.2** The server validates the node's `hello.protocol_version` against its own; rejects with code `4002` if incompatible.
 
@@ -60,15 +60,15 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 **FR-4.1** Plugin reads configuration from `~/.hermes/hermes-nodes.yaml` and env vars. Env vars override file values. Defaults if neither set:
 - `host`: `127.0.0.1` (the safe default — assumes nginx is fronting TLS)
-- `port`: `6969`
+- `port`: `7000`
 - `tls_cert_path`: unset (TLS termination is expected at the reverse proxy)
 - `tls_key_path`: unset
 - `token_store_path`: `~/.hermes/nodes/tokens.json`
 - `token_encryption_key_env`: `HERMES_NODES_TOKEN_KEY` (the env var name, not the value)
 
 **FR-4.1a** The plugin MUST support two TLS modes:
-- **Reverse-proxied (default):** listens on `127.0.0.1:6969` plain HTTP. TLS is terminated by nginx/Caddy/etc in front.
-- **Direct TLS:** listens on `0.0.0.0:6969` (or any host) with `tls_cert_path` + `tls_key_path` configured. Used when no reverse proxy is in front.
+- **Reverse-proxied (default):** listens on `127.0.0.1:7000` plain HTTP. TLS is terminated by nginx/Caddy/etc in front.
+- **Direct TLS:** listens on `0.0.0.0:7000` (or any host) with `tls_cert_path` + `tls_key_path` configured. Used when no reverse proxy is in front.
 
 **FR-4.1b** Selection is automatic based on config: if both `tls_cert_path` and `tls_key_path` are set, use direct TLS; otherwise listen on plain HTTP (assume reverse proxy).
 
@@ -183,8 +183,8 @@ All open questions from earlier drafts are decided. Recording them here so futur
 
 | # | Question | Decision | Date |
 |---|---|---|---|
-| 1 | Default WSS port | **6969** | 2026-06-04 |
+| 1 | Default WSS port | **7000** | 2026-06-04 |
 | 2 | Token rotation cadence | **Manual only.** `hermes node revoke` + `hermes node pair` is the rotation path. v1 ships with no auto-rotation. | 2026-06-04 |
 | 3 | Audit log retention | **90 days laptop-side, 1 year server-side.** Both configurable via `audit_retention_days` (server) and `audit_retention_days` in node config (laptop). | 2026-06-04 |
-| 4 | TLS cert source | **Configurable.** Default mode is reverse-proxied (nginx fronts TLS, plugin binds to `127.0.0.1:6969` plain HTTP). Direct TLS mode available when no reverse proxy is in front. See `README.md` "TLS configuration" for the nginx snippet. | 2026-06-04 |
+| 4 | TLS cert source | **Configurable.** Default mode is reverse-proxied (nginx fronts TLS, plugin binds to `127.0.0.1:7000` plain HTTP). Direct TLS mode available when no reverse proxy is in front. See `README.md` "TLS configuration" for the nginx snippet. | 2026-06-04 |
 | 5 | QR code in `hermes node pair` | **Text token only for v1.** QR code is a v2 nice-to-have. | 2026-06-04 |

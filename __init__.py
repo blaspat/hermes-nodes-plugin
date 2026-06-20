@@ -151,16 +151,23 @@ def register(ctx) -> None:
     import os
 
     if os.environ.get("HERMES_NODES_AUTO_START", "1") == "1":
-        # Quick socket check: if port 6969 is already bound, the server
-        # is already running (e.g. from a previous gateway instance or
-        # a test server). Skip auto-start to avoid "address in use" spam.
+        # Load config to get the actual port for the socket check.
+        from .config import load_config
+
+        cfg = load_config()
+        _check_port = cfg.port
+
+        # Quick socket check: if the configured port is already bound,
+        # the server is already running (e.g. from a previous gateway
+        # instance or a test server). Skip auto-start to avoid
+        # "address in use" spam.
         import socket
 
         _port_free = True
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", 6969))
+            s.bind(("127.0.0.1", _check_port))
             s.close()
         except OSError:
             _port_free = False
@@ -179,8 +186,9 @@ def register(ctx) -> None:
 
                         loop.run_until_complete(_on_session_start())
                         log.info(
-                            "hermes-nodes-plugin: WSS server started on port 6969"
+                            "hermes-nodes-plugin: WSS server started on port %d"
                             " (background thread)",
+                            _check_port,
                         )
                     # Keep the loop alive so uvicorn tasks continue running.
                     loop.run_forever()
@@ -205,8 +213,9 @@ def register(ctx) -> None:
                 )
         else:
             log.debug(
-                "hermes-nodes-plugin: port 6969 already bound — "
-                "server likely already running. Skipping auto-start."
+                "hermes-nodes-plugin: port %d already bound — "
+                "server likely already running. Skipping auto-start.",
+                _check_port,
             )
     else:
         log.debug(

@@ -406,22 +406,23 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_status() -> int:
-    """Show whether the WSS server is listening on the default port.
+def _cmd_status(args: argparse.Namespace | None = None) -> int:
+    """Show whether the WSS server is listening on the configured port.
 
-    Probes port 6969 directly with a TCP socket handshake rather than
-    checking an in-memory runner object, because the CLI runs in a
-    *separate process* from the gateway — _default_runner is
+    Probes the port from the active config via a TCP socket handshake
+    rather than checking an in-memory runner object, because the CLI
+    runs in a *separate process* from the gateway — _default_runner is
     always None at CLI time.
     """
     import socket
 
+    config = load_config()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(2.0)
     try:
-        s.connect(("127.0.0.1", 6969))
+        s.connect(("127.0.0.1", config.port))
         s.close()
-        print("hermes-nodes server: listening on 127.0.0.1:6969")
+        print(f"hermes-nodes server: listening on 127.0.0.1:{config.port}")
         return 0
     except (OSError, socket.timeout):
         print("hermes-nodes server: not running")
@@ -473,12 +474,13 @@ def _connected_names() -> set[str]:
     """
     config = load_config()
     base_url = f"http://{config.host}:{config.port}"
-    status_url = f"{base_url}/nodes/status"
+    status_url = f"{base_url}/nodes"
     try:
         import urllib.request
         with urllib.request.urlopen(status_url, timeout=2.0) as resp:
             data = __import__("json").loads(resp.read())
-            return set(data.get("connected_names", []))
+            return {
+                n["name"] for n in data.get("nodes", [])}
     except Exception:
         return set()
 
