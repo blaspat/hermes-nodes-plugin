@@ -77,6 +77,7 @@ import time of the plugin.
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -100,9 +101,6 @@ _ENV_PREFIX = "HERMES_NODES_"
 # ---------------------------------------------------------------------------|
 # Connection probing                                                        |
 # ---------------------------------------------------------------------------|
-
-import socket
-
 
 def probe_connect_host(candidate: str, port: int, timeout: float = 1.0) -> str | None:
     """Return ``candidate`` if a TCP socket can connect to it on ``port``.
