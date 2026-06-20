@@ -68,7 +68,7 @@ def _node_exec_impl(
         import httpx
 
         cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/exec"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/exec"
         payload: dict[str, Any] = {"command": command}
         if cwd:
             payload["cwd"] = cwd
@@ -129,7 +129,7 @@ def _node_read_impl(
         import httpx
 
         cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/read"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/read"
         with httpx.Client(timeout=timeout_s + 5.0) as client:
             response = client.post(url, json={"path": path})
             response.raise_for_status()
@@ -189,7 +189,7 @@ def _node_write_impl(
         import httpx
 
         cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/write"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/write"
         with httpx.Client(timeout=timeout_s + 5.0) as client:
             response = client.post(url, json={"path": path, "content": content, "mode": mode})
             response.raise_for_status()
@@ -238,7 +238,7 @@ def _node_list_impl(
         from .config import load_config
 
         cfg = load_config()
-        status_url = f"http://{cfg.host}:{cfg.port}/nodes"
+        status_url = f"http://{cfg.connect_host}:{cfg.port}/nodes"
         import urllib.request
 
         with urllib.request.urlopen(status_url, timeout=2.0) as resp:

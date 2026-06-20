@@ -210,6 +210,10 @@ The plugin reads from `~/.hermes/hermes-nodes.yaml` (and env vars, which overrid
 ```yaml
 # ~/.hermes/hermes-nodes.yaml
 host: "127.0.0.1"          # WS server bind address (default)
+# connect_host is resolved automatically at load time: the loader probes
+# ``host`` first, then ``localhost``, and stores the reachable address here.
+# HTTP clients (tools, CLI) always use ``connect_host`` to avoid connecting
+# to an unreachable loopback address. Override via HERMES_NODES_CONNECT_HOST.
 port: 7000                 # WS server port (default)
 token_encryption_key_env: "HERMES_NODES_TOKEN_KEY"  # env var holding Fernet key
 # Both TLS paths must be set together to enable direct TLS mode:

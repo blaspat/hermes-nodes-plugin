@@ -11,6 +11,13 @@ Keys (file format matches env-var names, minus the ``HERMES_NODES_``
 prefix and lowercased):
 
   * ``host``                      (str)   default ``"127.0.0.1"``
+  * ``connect_host``               (str)   resolved at load time — the
+    loopback address that is actually reachable on this machine.
+    The loader probes ``host`` first, then ``"localhost"`` as fallback,
+    and stores the result here. HTTP clients (tools, CLI) always use
+    this value rather than ``host`` to avoid connecting to an
+    unreachable loopback address. Stored under the env-var
+    ``HERMES_NODES_CONNECT_HOST`` so operators can override it if needed.
   * ``port``                      (int)   default ``7000``
   * ``tls_cert_path``             (str|None) default ``None``
   * ``tls_key_path``              (str|None) default ``None``
@@ -70,7 +77,7 @@ import time of the plugin.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -90,9 +97,54 @@ DEFAULT_TOKEN_STORE_STR = "~/.hermes/nodes/tokens.json"
 # config keys uniformly to keep precedence rules easy to explain.
 _ENV_PREFIX = "HERMES_NODES_"
 
-# ---------------------------------------------------------------------------
-# Dataclass
-# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------|
+# Connection probing                                                        |
+# ---------------------------------------------------------------------------|
+
+import socket
+
+
+def probe_connect_host(candidate: str, port: int, timeout: float = 1.0) -> str | None:
+    """Return ``candidate`` if a TCP socket can connect to it on ``port``.
+
+    Returns ``None`` when the connection is refused or times out, indicating
+    that this loopback address is not reachable on this machine.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((candidate, port))
+        sock.close()
+        return candidate
+    except (OSError, socket.timeout):
+        return None
+
+
+def resolve_connect_host(*, host: str, port: int) -> str:
+    """Resolve the connectable loopback address for HTTP clients.
+
+    Probing strategy (tried in order, first reachable wins):
+      1. ``host`` as configured (usually ``127.0.0.1``)
+      2. ``localhost``
+
+    If the env var ``HERMES_NODES_CONNECT_HOST`` is set, it is used directly
+    with no probing (operator override — they know what they're doing).
+    """
+    override = os.environ.get("HERMES_NODES_CONNECT_HOST")
+    if override:
+        return override
+
+    if probe_connect_host(host, port) is not None:
+        return host
+    if probe_connect_host("localhost", port) is not None:
+        return "localhost"
+    # Neither is reachable — fall back to host as last resort; the
+    # connection will fail at call time with a clear error.
+    return host
+
+# ---------------------------------------------------------------------------|
+# Dataclass                                                                 |
+# ---------------------------------------------------------------------------|
 
 @dataclass(frozen=True)
 class NodeServerConfig:
@@ -105,6 +157,9 @@ class NodeServerConfig:
     """
 
     host: str = "127.0.0.1"
+    # Resolved at load time — the loopback address that is actually reachable.
+    # See probe_connect_host() for the probing logic.
+    connect_host: str = "127.0.0.1"
     port: int = 7000
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
@@ -527,7 +582,13 @@ def load_config(
         path = Path(config_path).expanduser()
 
     file_data = _load_yaml(path)
-    return _build(env=env, file_data=file_data)
+    cfg = _build(env=env, file_data=file_data)
+
+    # Probe for a connectable loopback address. This avoids the situation
+    # where the server binds to 127.0.0.1 but the client can't reach it
+    # (e.g. some container setups where localhost resolves differently).
+    connect_host = resolve_connect_host(host=cfg.host, port=cfg.port)
+    return replace(cfg, connect_host=connect_host)
 
 # ---------------------------------------------------------------------------
 # Convenience re-exports

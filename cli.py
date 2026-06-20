@@ -473,7 +473,7 @@ def _connected_names() -> set[str]:
     every row.
     """
     config = load_config()
-    base_url = f"http://{config.host}:{config.port}"
+    base_url = f"http://{config.connect_host}:{config.port}"
     status_url = f"{base_url}/nodes"
     try:
         import urllib.request
