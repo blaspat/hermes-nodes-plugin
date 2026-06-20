@@ -155,6 +155,7 @@ def register(ctx) -> None:
         from .config import load_config
 
         cfg = load_config()
+        _check_host = cfg.connect_host
         _check_port = cfg.port
 
         # Quick socket check: if the configured port is already bound,
@@ -167,7 +168,7 @@ def register(ctx) -> None:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", _check_port))
+            s.bind((_check_host, _check_port))
             s.close()
         except OSError:
             _port_free = False
