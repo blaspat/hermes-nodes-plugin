@@ -250,10 +250,6 @@ class NodeServerConfig:
         """
         return self.tls_cert_path is not None and self.tls_key_path is not None
 
-    def is_loopback(self) -> bool:
-        """True when the bind address is loopback-only (safe without TLS)."""
-        return self.host in {"127.0.0.1", "::1", "localhost"}
-
     # -- env helpers --------------------------------------------------------
 
     def token_encryption_key(self, env: Mapping[str, str] | None = None) -> str | None:

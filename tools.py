@@ -67,7 +67,6 @@ def _node_exec_impl(
     try:
         import httpx
 
-        cfg = load_config()
         url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/exec"
         payload: dict[str, Any] = {"command": command}
         if cwd:
