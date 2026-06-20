@@ -9,7 +9,7 @@ and ``**kw`` for forward-compatibility kwargs. Each handler extracts
 fields from ``args`` and calls the internal implementation.
 
 All tools communicate with the WSS server via httpx WebSocket (local
-HTTP round-trip to port 6969) rather than via an in-process registry.
+HTTP round-trip to the configured port) rather than via an in-process registry.
 This avoids the registry-synchronisation problem that arises when the
 gateway spawns subagent processes: each subagent gets its own empty
 ``_default_runner._registry`` instance, so ``NodeEnvironment`` cannot
@@ -18,10 +18,10 @@ find any nodes. The HTTP endpoint is always authoritative.
 
 from __future__ import annotations
 
-import asyncio
+
 import json
 import logging
-import uuid
+
 from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
@@ -33,85 +33,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Tool implementations (called by the wrapper handlers below)
 # ---------------------------------------------------------------------------
-
-
-def _build_wss_url() -> str:
-    """Return the WSS endpoint URL for the local node server.
-
-    Uses ``localhost`` (not 127.0.0.1) because the server's WebSocket
-    upgrade handler validates the Host header and some configurations
-    only accept ``localhost``.
-    """
-    # HTTP endpoint uses 127.0.0.1 for consistency with what the server
-    # binds to; WSS endpoint needs to match what the server's WebSocket
-    # handler considers a valid Host header.
-    return "ws://localhost:6969/ws/nodes"
-
-
-async def _ws_request(
-    target: str,
-    request_type: str,
-    payload: dict[str, Any],
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Send a request over a WSS connection and return the structured result.
-
-    Handles the full protocol handshake (hello / hello_ack, auth / auth_ok)
-    and then sends ``payload`` and waits for the matching response.
-
-    Raises on timeout, protocol errors, or if the server returns an error
-    status.
-    """
-    import websockets
-
-    request_id = str(uuid.uuid4())
-    payload["id"] = request_id
-    payload["type"] = request_type
-
-    url = _build_wss_url()
-
-    async def _do_ws() -> dict[str, Any]:
-        async with websockets.connect(url, open_timeout=10.0) as ws:
-            # -- hello (MUST be sent first; server waits up to 10s before closing)
-            await ws.send(json.dumps({
-                "type": "hello",
-                "protocol_version": "0.1.0",
-                "node_name": target,
-            }))
-            hello_raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
-            hello_data = json.loads(hello_raw)
-            if hello_data.get("type") != "hello_ack":
-                raise RuntimeError(f"expected hello_ack, got {hello_data!r}")
-            # -- auth (anonymous — token validated by server config)
-            await ws.send(json.dumps({"type": "auth", "node_name": target}))
-            auth_resp_raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
-            auth_resp = json.loads(auth_resp_raw)
-            if auth_resp.get("type") != "auth_ok":
-                raise RuntimeError(f"auth failed: {auth_resp!r}")
-            # -- send request
-            await ws.send(json.dumps(payload))
-            # -- read responses until we get one with matching id
-            while True:
-                msg_raw = await asyncio.wait_for(
-                    ws.recv(), timeout=timeout_s + 5.0
-                )
-                msg = json.loads(msg_raw)
-                if msg.get("id") == request_id:
-                    return msg
-
-    try:
-        result = await asyncio.wait_for(_do_ws(), timeout=timeout_s + 15.0)
-    except asyncio.TimeoutError:
-        raise TimeoutError(
-            f"{request_type} on {target!r} timed out after {timeout_s}s"
-        )
-
-    if result.get("status") == "error":
-        code = result.get("code", 0)
-        raise RuntimeError(
-            f"node returned error status {code}: {result.get('reason', result)}"
-        )
-    return result
 
 
 def _node_exec_impl(
@@ -143,17 +64,10 @@ def _node_exec_impl(
         else DEFAULT_EXEC_TIMEOUT_SECONDS
     )
 
-    payload: dict[str, Any] = {"command": command}
-    if cwd:
-        payload["cwd"] = cwd
-    if env:
-        payload["env"] = env
-
     try:
         import httpx
 
-        cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/exec"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/exec"
         payload: dict[str, Any] = {"command": command}
         if cwd:
             payload["cwd"] = cwd
@@ -214,7 +128,7 @@ def _node_read_impl(
         import httpx
 
         cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/read"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/read"
         with httpx.Client(timeout=timeout_s + 5.0) as client:
             response = client.post(url, json={"path": path})
             response.raise_for_status()
@@ -274,7 +188,7 @@ def _node_write_impl(
         import httpx
 
         cfg = load_config()
-        url = f"http://{cfg.host}:{cfg.port}/nodes/{target}/write"
+        url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/write"
         with httpx.Client(timeout=timeout_s + 5.0) as client:
             response = client.post(url, json={"path": path, "content": content, "mode": mode})
             response.raise_for_status()
@@ -303,20 +217,35 @@ def _node_list_impl(
     Hits the HTTP /nodes/status endpoint.  This is always queried over
     localhost HTTP so it reflects the actual server state even when the
     calling process has an empty in-process registry.
+
+    Response shape per the schema (schemas.py NODE_LIST):
+        {
+          "nodes": [
+            {
+              "name": str,
+              "connected_at": str (ISO 8601),
+              "last_heartbeat": str (ISO 8601) | null,
+              "session_id": str,
+              "remote_addr": str,
+              "state": "connected"
+            }
+          ],
+          "count": int
+        }
     """
     try:
         from .config import load_config
 
         cfg = load_config()
-        status_url = f"http://{cfg.host}:{cfg.port}/nodes/status"
+        status_url = f"http://{cfg.connect_host}:{cfg.port}/nodes"
         import urllib.request
 
         with urllib.request.urlopen(status_url, timeout=2.0) as resp:
             data = json.loads(resp.read())
-        connected_names: list[str] = data.get("connected_names", [])
+        connected: list[dict[str, Any]] = data.get("nodes", [])
         return json.dumps({
-            "nodes": [{"name": n, "state": "connected"} for n in connected_names],
-            "count": len(connected_names),
+            "nodes": connected,
+            "count": len(connected),
         })
     except Exception as e:
         return json.dumps({"error": f"node_list failed: {e}"})

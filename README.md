@@ -56,7 +56,7 @@ hermes node pair --name my-devbox
 # prints a one-time token
 
 # On the remote node, run:
-hermes-node pair --server ws://<server>:6969 --token <token>
+hermes-node pair --server ws://<server>:7000 --token <token>
 ```
 
 ### 4. Run a command
