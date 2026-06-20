@@ -420,9 +420,9 @@ def _cmd_status(args: argparse.Namespace | None = None) -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(2.0)
     try:
-        s.connect(("127.0.0.1", config.port))
+        s.connect((config.connect_host, config.port))
         s.close()
-        print(f"hermes-nodes server: listening on 127.0.0.1:{config.port}")
+        print(f"hermes-nodes server: listening on {config.connect_host}:{config.port}")
         return 0
     except (OSError, socket.timeout):
         print("hermes-nodes server: not running")
