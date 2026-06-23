@@ -20,6 +20,12 @@ Install the plugin:
  git clone https://github.com/blaspat/hermes-nodes-plugin \
   ~/.hermes/plugins/hermes-nodes-plugin
  ```
+Then, update your `config.yaml`. Add `hermes-nodes-plugin`
+```yaml
+plugins:
+  enabled:
+  - hermes-nodes-plugin
+```
 
 ## Core Features
 - `node_exec(target, command)`: run shell commands on a paired node (auto-retries on disconnect).
@@ -110,7 +116,7 @@ hermes node revoke --name my-devbox
 ```
 
 ## Contributing
-- Code Style: Follow `CONTRIBUTING.md`.
+- Code Style: Follow [CONTRIBUTING](CONTRIBUTING.md).
 - Lint it: `ruff check .`
 - Flow: Fork → Branch → PR.
 
@@ -125,4 +131,4 @@ hermes node revoke --name my-devbox
 - **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
 
 ---
-License: [MIT](LICENSE) | Author: © 2026 Blasius User
+License: [MIT](LICENSE) | Author: © 2026 Blasius Patrick
