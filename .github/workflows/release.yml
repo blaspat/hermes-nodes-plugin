@@ -59,7 +59,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            "dist/${artifact}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" &>/dev/null; then
+            # Release already exists (created by GitHub web UI when tag was made).
+            # Upload the asset and update notes.
+            gh release upload "$TAG" "dist/${artifact}" --clobber
+            echo "Uploaded ${artifact} to existing release ${TAG}"
+          else
+            gh release create "$TAG" \
+              "dist/${artifact}" \
+              --title "$TAG" \
+              --generate-notes
+            echo "Created release ${TAG}"
+          fi
