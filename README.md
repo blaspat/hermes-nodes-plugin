@@ -11,7 +11,7 @@ A Hermes Agent plugin that turns any Hermes profile into a “brain” to comman
 - [Related](#related)
 
 ## Prerequisites
-Install Python 3.11+, uv (optional), and have a Hermes Agent set up.
+Install Python 3.11+ and have a Hermes Agent set up.
 
 ## Installation
 Install the plugin:
@@ -93,7 +93,17 @@ node_write(target="my-devbox", path="~/project/new.txt", content="sample", mode=
 
 These are LLM tools — not CLI commands. The LLM handles the routing over WSS automatically.
 
-### 6. Revoke
+### 6. List nodes
+
+Check which nodes are connected and their current state:
+
+```
+node_list()
+```
+
+Returns a JSON object with `nodes` (array of name, connected_at, last_heartbeat, session_id, remote_addr, state) and `count`. The LLM uses this to discover available targets.
+
+### 7. Revoke
 
 ```bash
 hermes node revoke --name my-devbox
