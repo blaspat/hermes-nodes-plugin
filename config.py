@@ -208,6 +208,18 @@ class NodeServerConfig:
     # from the field name).
     rate_limit_per_node: int = 100
 
+    # Number of times to retry an exec/read/write call when the
+    # target node is not connected or the server is unreachable.
+    # Each retry uses exponential backoff (1s, 2s, 4s... capped
+    # at max_retry_backoff). Set to 0 to disable retries.
+    # Env var: ``HERMES_NODES_MAX_RETRIES``.
+    max_retries: int = 3
+
+    # Maximum backoff between retries, in seconds. The actual
+    # delay is min(backoff_seconds * 2^attempt, max_retry_backoff).
+    # Env var: ``HERMES_NODES_RETRY_BACKOFF_SECONDS``.
+    retry_backoff_seconds: float = 2.0
+
     def __post_init__(self) -> None:
         # TLS partial-config is the most common deployment footgun: an
         # operator sets tls_cert_path but forgets tls_key_path (or vice
@@ -514,6 +526,60 @@ def _build(
                     f"got {rate_limit_raw!r}"
                 ) from exc
 
+    # -- max retries (int) ---------------------------------------------------
+    max_retries_raw: Any = None
+    max_retries_source = "default"
+    if env.get(_env_name("max_retries")) is not None:
+        max_retries_raw = env[_env_name("max_retries")]
+        max_retries_source = "env"
+    elif _read_file_value(file_data, "max_retries") is not None:
+        max_retries_raw = _read_file_value(file_data, "max_retries")
+        max_retries_source = "file"
+    max_retries_val: int | None = None
+    if max_retries_raw is not None:
+        if isinstance(max_retries_raw, str) and max_retries_raw.strip() == "":
+            max_retries_val = None
+        else:
+            try:
+                max_retries_val = int(max_retries_raw)
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(
+                    f"{max_retries_source}: max_retries must be an integer, "
+                    f"got {max_retries_raw!r}"
+                ) from exc
+            if max_retries_val < 0:
+                raise ConfigError(
+                    f"{max_retries_source}: max_retries must be >= 0, "
+                    f"got {max_retries_val}"
+                )
+
+    # -- retry backoff seconds (float) --------------------------------------
+    retry_backoff_raw: Any = None
+    retry_backoff_source = "default"
+    if env.get(_env_name("retry_backoff_seconds")) is not None:
+        retry_backoff_raw = env[_env_name("retry_backoff_seconds")]
+        retry_backoff_source = "env"
+    elif _read_file_value(file_data, "retry_backoff_seconds") is not None:
+        retry_backoff_raw = _read_file_value(file_data, "retry_backoff_seconds")
+        retry_backoff_source = "file"
+    retry_backoff_val: float | None = None
+    if retry_backoff_raw is not None:
+        if isinstance(retry_backoff_raw, str) and retry_backoff_raw.strip() == "":
+            retry_backoff_val = None
+        else:
+            try:
+                retry_backoff_val = float(retry_backoff_raw)
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(
+                    f"{retry_backoff_source}: retry_backoff_seconds must be a number, "
+                    f"got {retry_backoff_raw!r}"
+                ) from exc
+            if retry_backoff_val <= 0:
+                raise ConfigError(
+                    f"{retry_backoff_source}: retry_backoff_seconds must be > 0, "
+                    f"got {retry_backoff_val}"
+                )
+
     # Now assemble. We use a partial dict + NodeServerConfig defaults for
     # any key we didn't resolve — dataclass handles the "default" leg of
     # the precedence chain.
@@ -543,6 +609,10 @@ def _build(
         resolved["heartbeat_sweep_interval_seconds"] = sweep_interval
     if rate_limit is not None:
         resolved["rate_limit_per_node"] = rate_limit
+    if max_retries_val is not None:
+        resolved["max_retries"] = max_retries_val
+    if retry_backoff_val is not None:
+        resolved["retry_backoff_seconds"] = retry_backoff_val
 
     return NodeServerConfig(**resolved)
 

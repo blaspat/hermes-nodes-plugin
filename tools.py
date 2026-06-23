@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,99 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .registry import NodeConnection, NodeRegistry
+
+
+# ---------------------------------------------------------------------------
+# Retry helper
+# ---------------------------------------------------------------------------
+
+
+def _retry_config() -> tuple[int, float]:
+    """Return (max_retries, backoff_seconds) from the current config."""
+    from .config import load_config
+
+    cfg = load_config()
+    return cfg.max_retries, cfg.retry_backoff_seconds
+
+
+def _should_retry(status_code: int, reason: str = "") -> bool:
+    """Return True if the response suggests a transient failure worth retrying.
+
+    Retries on:
+    - Server errors (5xx)
+    - Node not connected (any status where reason mentions "not connected")
+    """
+    if status_code >= 500:
+        return True
+    if "not connected" in reason.lower():
+        return True
+    return False
+
+
+def _request_with_retry(
+    method: str,
+    url: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Make an HTTP request with exponential backoff retry.
+
+    Retries up to ``max_retries`` times when the server is unreachable
+    or returns a transient error. Between retries, sleeps
+    ``backoff * 2^attempt`` seconds (capped at 30s).
+    """
+    import httpx
+
+    max_retries, backoff = _retry_config()
+    last_error: Exception | None = None
+    last_result: dict[str, Any] | None = None
+
+    for attempt in range(max_retries + 1):
+        last_error = None
+        last_result = None
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                if method == "POST":
+                    resp = client.post(url, json=json_body)
+                else:
+                    resp = client.get(url)
+                result = resp.json()
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                delay = min(backoff * (2 ** attempt), 30.0)
+                logger.warning(
+                    "Request to %s failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                    url, attempt + 1, max_retries + 1, e, delay,
+                )
+                time.sleep(delay)
+                continue
+            break
+
+        # Check if the response indicates a transient error.
+        reason = ""
+        if isinstance(result, dict):
+            reason = result.get("reason", "") or result.get("error", "")
+        if _should_retry(resp.status_code, reason):
+            last_result = result
+            if attempt < max_retries:
+                delay = min(backoff * (2 ** attempt), 30.0)
+                logger.warning(
+                    "Request to %s returned %d (attempt %d/%d): %s. Retrying in %.1fs...",
+                    url, resp.status_code, attempt + 1, max_retries + 1, reason, delay,
+                )
+                time.sleep(delay)
+                continue
+        else:
+            return result  # success or non-retryable error
+
+    # All retries exhausted.
+    if last_error:
+        return {"error": f"Request failed after {max_retries + 1} attempts: {last_error}"}
+    if last_result:
+        return last_result
+    return {"error": "Request failed: unknown error"}
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +159,6 @@ def _node_exec_impl(
     )
 
     try:
-        import httpx
-
         url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/exec"
         payload: dict[str, Any] = {"command": command}
         if cwd:
@@ -76,10 +168,9 @@ def _node_exec_impl(
         if timeout_ms is not None:
             payload["timeout_ms"] = timeout_ms
 
-        with httpx.Client(timeout=timeout_s + 5.0) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            result = response.json()
+        result = _request_with_retry(
+            "POST", url, json_body=payload, timeout=timeout_s + 5.0,
+        )
 
         # Normalise to {"output": str, "returncode": int}
         if result.get("status") == "ok":
@@ -93,9 +184,14 @@ def _node_exec_impl(
                 "returncode": exec_result.get("returncode", 0),
             })
         else:
-            # timeout or other non-error status
+            # timeout, node not connected, or other non-ok status
+            error_msg = (
+                result.get("reason")
+                or result.get("error")
+                or "unknown error"
+            )
             return json.dumps({
-                "output": result.get("reason", ""),
+                "output": error_msg,
                 "returncode": 1,
             })
     except Exception as e:
@@ -125,14 +221,11 @@ def _node_read_impl(
     )
 
     try:
-        import httpx
-
         cfg = load_config()
         url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/read"
-        with httpx.Client(timeout=timeout_s + 5.0) as client:
-            response = client.post(url, json={"path": path})
-            response.raise_for_status()
-            result = response.json()
+        result = _request_with_retry(
+            "POST", url, json_body={"path": path}, timeout=timeout_s + 5.0,
+        )
 
         if result.get("status") == "ok":
             read_result = result.get("read_result", {})
@@ -143,8 +236,13 @@ def _node_read_impl(
                 "encoding": "utf-8",
             })
         else:
+            error_msg = (
+                result.get("reason")
+                or result.get("error")
+                or "read failed"
+            )
             return json.dumps({
-                "error": result.get("reason", "read failed"),
+                "error": error_msg,
                 "code": result.get("code", 0),
             })
     except Exception as e:
@@ -185,14 +283,12 @@ def _node_write_impl(
         })
 
     try:
-        import httpx
-
         cfg = load_config()
         url = f"http://{cfg.connect_host}:{cfg.port}/nodes/{target}/write"
-        with httpx.Client(timeout=timeout_s + 5.0) as client:
-            response = client.post(url, json={"path": path, "content": content, "mode": mode})
-            response.raise_for_status()
-            result = response.json()
+        result = _request_with_retry(
+            "POST", url, json_body={"path": path, "content": content, "mode": mode},
+            timeout=timeout_s + 5.0,
+        )
 
         if result.get("status") == "ok":
             write_result = result.get("write_result", {})
@@ -200,8 +296,13 @@ def _node_write_impl(
                 "bytes_written": write_result.get("bytes_written", 0),
             })
         else:
+            error_msg = (
+                result.get("reason")
+                or result.get("error")
+                or "write failed"
+            )
             return json.dumps({
-                "error": result.get("reason", "write failed"),
+                "error": error_msg,
                 "code": result.get("code", 0),
             })
     except Exception as e:
