@@ -1,7 +1,7 @@
-"""WSS server for paired hermes-nodes connections.
+"""WSS server for paired hermes-node connections.
 
-Implements the server half of the auth handshake described in
-``../hermes-nodes/PROTOCOL.md`` §1 (connection lifecycle) and §3.1-3.5
+Pair with ``hermes-node`` Go binary (``blaspat/hermes-node``).
+``../hermes-node/PROTOCOL.md`` §1 (connection lifecycle) and §3.1-3.5
 (message types ``hello`` / ``hello_ack`` / ``auth`` / ``auth_ok`` /
 ``auth_err``). The server is the dial-ee — nodes are outbound-only
 and connect to ``/ws/nodes`` on this FastAPI app.
@@ -281,7 +281,7 @@ def create_app(
             clock=clock,
         )
 
-    app = FastAPI(title="hermes-nodes WSS server")
+    app = FastAPI(title="hermes-node WSS server")
     app.state.token_store = token_store
     app.state.registry = registry
     app.state.config = config

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 
 class PluginError(Exception):
-    """Base class for all hermes-nodes-plugin errors."""
+    """Base class for all hermes-node-plugin errors."""
 
 
 class ConfigError(PluginError):

@@ -1,4 +1,4 @@
-name: hermes-nodes-plugin
+name: hermes-node-plugin
 version: 0.1.0
 description: "Hermes Agent plugin: WSS node server for distributed edge node execution. Provides node_exec, node_read, node_write, and node_list tools for running commands on paired remote nodes."
 author: Blasius Patrick

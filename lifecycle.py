@@ -170,7 +170,7 @@ class ServerRunner:
         ``startup`` returns.
         """
         if self.is_running:
-            logger.debug("hermes-nodes server already running; start() is a no-op")
+            logger.debug("hermes-node server already running; start() is a no-op")
             return
 
         # Build the FastAPI app lazily on first start. ``create_app``
@@ -226,7 +226,7 @@ class ServerRunner:
                     await self._server.startup()
                 except (OSError, SystemExit) as exc:
                     logger.warning(
-                        "hermes-nodes: server startup failed "
+                        "hermes-node: server startup failed "
                         "(port %d): %s",
                         self._config.port,
                         exc,
@@ -238,7 +238,7 @@ class ServerRunner:
                 if self._server.started:
                     await self._server.shutdown()
 
-        self._task = asyncio.create_task(_serve(), name="hermes-nodes-wss-server")
+        self._task = asyncio.create_task(_serve(), name="hermes-node-wss-server")
 
         # Background sweep (issue #19). Created after the uvicorn
         # task so the sweep is never running while the server isn't.
@@ -247,7 +247,7 @@ class ServerRunner:
         self._stop_sweep = asyncio.Event()
         self._sweep_task = asyncio.create_task(
             self._sweep_stale_connections(),
-            name="hermes-nodes-stale-sweep",
+            name="hermes-node-stale-sweep",
         )
 
         # Wait for the server to actually be listening before
@@ -266,7 +266,7 @@ class ServerRunner:
             # doesn't leak.
             await self.drain(timeout=1.0)
             raise RuntimeError(
-                f"hermes-nodes server failed to bind {self._config.host}:"
+                f"hermes-node server failed to bind {self._config.host}:"
                 f"{self._config.port} within 5s"
             )
 
@@ -275,7 +275,7 @@ class ServerRunner:
             # error so the caller can log it; do not raise past
             # here in the hook path (callers handle errors).
             logger.error(
-                "hermes-nodes server failed to start on %s:%d",
+                "hermes-node server failed to start on %s:%d",
                 self._config.host,
                 self._config.port,
             )
@@ -289,7 +289,7 @@ class ServerRunner:
             return
 
         logger.info(
-            "hermes-nodes WSS server listening on %s:%d",
+            "hermes-node WSS server listening on %s:%d",
             self._config.host,
             self._config.port,
         )
@@ -318,7 +318,7 @@ class ServerRunner:
                 await asyncio.wait_for(asyncio.shield(sweep_task), timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "hermes-nodes stale sweep did not exit within %.1fs; cancelling",
+                    "hermes-node stale sweep did not exit within %.1fs; cancelling",
                     timeout,
                 )
                 sweep_task.cancel()
@@ -327,7 +327,7 @@ class ServerRunner:
                 except (asyncio.CancelledError, Exception):
                     pass
             except Exception as exc:  # pragma: no cover — defensive
-                logger.warning("hermes-nodes stale sweep raised on drain: %s", exc)
+                logger.warning("hermes-node stale sweep raised on drain: %s", exc)
         self._sweep_task = None
 
         server = self._server
@@ -344,7 +344,7 @@ class ServerRunner:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning(
-                "hermes-nodes server did not drain within %.1fs; cancelling",
+                "hermes-node server did not drain within %.1fs; cancelling",
                 timeout,
             )
             task.cancel()
@@ -353,7 +353,7 @@ class ServerRunner:
             except (asyncio.CancelledError, Exception):
                 pass
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("hermes-nodes server drain raised: %s", exc)
+            logger.warning("hermes-node server drain raised: %s", exc)
         finally:
             self._server = None
             self._task = None
@@ -387,7 +387,7 @@ class ServerRunner:
                 try:
                     candidates = await self._registry.stale(older_than=stale_after)
                 except Exception as exc:  # pragma: no cover — defensive
-                    logger.warning("hermes-nodes stale sweep query failed: %s", exc)
+                    logger.warning("hermes-node stale sweep query failed: %s", exc)
                     candidates = []
 
                 for conn in candidates:
@@ -401,13 +401,13 @@ class ServerRunner:
                         await _safe_close(conn.websocket, code=1000)
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(
-                            "hermes-nodes stale sweep: failed to close %r: %s",
+                            "hermes-node stale sweep: failed to close %r: %s",
                             conn.name,
                             exc,
                         )
                     else:
                         logger.info(
-                            "hermes-nodes stale sweep: closed stale connection %r "
+                            "hermes-node stale sweep: closed stale connection %r "
                             "(idle > %ds)",
                             conn.name,
                             self._config.heartbeat_stale_seconds,
@@ -431,7 +431,7 @@ class ServerRunner:
             # Re-raise so the cancelling task sees the cancellation.
             raise
         except Exception as exc:  # pragma: no cover — defensive
-            logger.error("hermes-nodes stale sweep crashed: %s", exc)
+            logger.error("hermes-node stale sweep crashed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -513,30 +513,30 @@ async def _on_session_start() -> None:
             purged = audit.purge_expired_rotations()
             if purged:
                 logger.info(
-                    "hermes-nodes: purged %d expired audit-log rotation(s)", purged
+                    "hermes-node: purged %d expired audit-log rotation(s)", purged
                 )
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("hermes-nodes: audit purge failed: %s", exc)
+            logger.warning("hermes-node: audit purge failed: %s", exc)
     except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("hermes-nodes: audit writer init failed: %s", exc)
+        logger.warning("hermes-node: audit writer init failed: %s", exc)
 
     try:
         runner = get_default_runner()
     except (ConfigError, TokenStoreError) as exc:
         logger.warning(
-            "hermes-nodes: cannot start server (%s) — set "
-            "HERMES_NODES_TOKEN_KEY and check ~/.hermes/hermes-nodes.yaml",
+            "hermes-node: cannot start server (%s) — set "
+            "HERMES_NODES_TOKEN_KEY and check ~/.hermes/hermes-node.yaml",
             exc,
         )
         return
     except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("hermes-nodes: unexpected error building runner: %s", exc)
+        logger.warning("hermes-node: unexpected error building runner: %s", exc)
         return
 
     try:
         await runner.start()
     except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("hermes-nodes: runner.start() failed: %s", exc)
+        logger.warning("hermes-node: runner.start() failed: %s", exc)
 
 
 async def _on_session_end() -> None:
@@ -557,13 +557,13 @@ async def _on_session_end() -> None:
         try:
             await runner.drain(timeout=5.0)
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("hermes-nodes: runner.drain() failed: %s", exc)
+            logger.warning("hermes-node: runner.drain() failed: %s", exc)
     try:
         from .audit import reset_default_audit_writer
 
         reset_default_audit_writer()
     except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("hermes-nodes: audit close failed: %s", exc)
+        logger.warning("hermes-node: audit close failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

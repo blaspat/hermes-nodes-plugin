@@ -1,6 +1,6 @@
-"""hermes-nodes-plugin: Hermes Agent plugin for remote node control.
+"""hermes-node-plugin: Hermes Agent plugin for remote node control.
 
-Pairs with the ``hermes-nodes`` Go binary. The plugin turns Agent (or any
+Pairs with the ``hermes-node`` Go binary. The plugin turns Agent (or any
 Hermes agent) into a "brain" that can exec / read / write on paired
 remote nodes over an authenticated WSS connection.
 
@@ -78,7 +78,7 @@ def register(ctx) -> None:
         ctx.register_hook("on_session_start", _on_session_start_lazy)
         ctx.register_hook("on_session_end", _on_session_end_lazy)
     except Exception as exc:
-        log.warning("hermes-nodes-plugin: hook registration failed: %s", exc)
+        log.warning("hermes-node-plugin: hook registration failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     # 2. CLI subcommand — guarded separately                               #
@@ -98,14 +98,14 @@ def register(ctx) -> None:
         ctx.register_cli_command(
             "node",
             help=(
-                "Manage paired hermes-nodes (WSS node server). "
+                "Manage paired hermes-node (WSS node server). "
                 "Subcommands: pair, list, revoke, status."
             ),
             setup_fn=_setup_node_subcommand_lazy,
             handler_fn=_node_handler_lazy,
         )
     except Exception as exc:
-        log.warning("hermes-nodes-plugin: CLI registration failed: %s", exc)
+        log.warning("hermes-node-plugin: CLI registration failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     # 3. Agent tools                                                        #
@@ -136,7 +136,7 @@ def register(ctx) -> None:
                 emoji=emoji,
             )
     except Exception as exc:
-        log.warning("hermes-nodes-plugin: tool registration failed: %s", exc)
+        log.warning("hermes-node-plugin: tool registration failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     # 4. Auto-start the WSS server                                         #
@@ -187,7 +187,7 @@ def register(ctx) -> None:
 
                         loop.run_until_complete(_on_session_start())
                         log.info(
-                            "hermes-nodes-plugin: WSS server started on port %d"
+                            "hermes-node-plugin: WSS server started on port %d"
                             " (background thread)",
                             _check_port,
                         )
@@ -195,7 +195,7 @@ def register(ctx) -> None:
                     loop.run_forever()
                 except Exception as exc:
                     log.warning(
-                        "hermes-nodes-plugin: server background thread failed: %s",
+                        "hermes-node-plugin: server background thread failed: %s",
                         exc,
                     )
                 finally:
@@ -205,20 +205,20 @@ def register(ctx) -> None:
                 import threading
 
                 t = threading.Thread(
-                    target=_start_server, daemon=True, name="hermes-nodes-wss"
+                    target=_start_server, daemon=True, name="hermes-node-wss"
                 )
                 t.start()
             except Exception as exc:
                 log.warning(
-                    "hermes-nodes-plugin: could not start server thread: %s", exc
+                    "hermes-node-plugin: could not start server thread: %s", exc
                 )
         else:
             log.debug(
-                "hermes-nodes-plugin: port %d already bound — "
+                "hermes-node-plugin: port %d already bound — "
                 "server likely already running. Skipping auto-start.",
                 _check_port,
             )
     else:
         log.debug(
-            "hermes-nodes-plugin: auto-start disabled (HERMES_NODES_AUTO_START=0)"
+            "hermes-node-plugin: auto-start disabled (HERMES_NODES_AUTO_START=0)"
         )

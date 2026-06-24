@@ -1,4 +1,4 @@
-# hermes-nodes Architecture
+# hermes-node Architecture
 
 ## Overview
 
@@ -6,18 +6,18 @@ Two independently-versioned repos:
 
 | Repo | Language | Role |
 |------|----------|------|
-| `hermes-nodes` | Go | Node client binary (runs on each remote machine) |
-| `hermes-nodes-plugin` | Python | Hermes Agent plugin + WS server (runs on VPS) |
+| `hermes-node` | Go | Node client binary (runs on each remote machine) |
+| `hermes-node-plugin` | Python | Hermes Agent plugin + WS server (runs on VPS) |
 
 ### Two CLIs — two binaries
 
-It is easy to confuse `hermes node` and `hermes-nodes`. They are completely separate programs:
+It is easy to confuse `hermes node` and `hermes-node`. They are completely separate programs:
 
-- **`hermes-nodes`** — Standalone Go binary installed on each node machine.
-  - `hermes-nodes node start --server wss://<host>:<port>` — connect to WS server
-  - `hermes-nodes pair --server wss://<host>:<port> --token <token> --name <name>` — pair with WS server using a token
+- **`hermes-node`** — Standalone Go binary installed on each node machine.
+  - `hermes-node node start --server wss://<host>:<port>` — connect to WS server
+  - `hermes-node pair --server wss://<host>:<port> --token <token> --name <name>` — pair with WS server using a token
 
-- **`hermes node`** — Plugin commands registered with the Hermes Agent CLI (Python). Only available when `hermes-nodes-plugin` is loaded.
+- **`hermes node`** — Plugin commands registered with the Hermes Agent CLI (Python). Only available when `hermes-node-plugin` is loaded.
   - `hermes node server start|stop|status` — manage the WS server on the VPS
   - `hermes node list` — show paired and connected nodes
   - `hermes node revoke <name>` — revoke a node's pairing token
@@ -31,7 +31,7 @@ It is easy to confuse `hermes node` and `hermes-nodes`. They are completely sepa
 │  VPS (WS server only — Python plugin code runs in Kate)      │
 │                                                             │
 │   Port: 7000 (configurable)                                 │
-│   Log:  ~/.hermes-nodes/server.log                          │
+│   Log:  ~/.hermes-node/server.log                          │
 │                                                             │
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │  WS Server                                          │   │
@@ -48,18 +48,18 @@ It is easy to confuse `hermes node` and `hermes-nodes`. They are completely sepa
            │
     ┌──────┴─────────┐
     │  Node A        │
-    │  (hermes-nodes │
+    │  (hermes-node │
     │   client)      │
     ├────────────────┤
     │  Node B        │
-    │  (hermes-nodes │
+    │  (hermes-node │
     │   client)      │
     └────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
 │  Hermes Agent (Kate)                                        │
 │                                                             │
-│  ~/.hermes/profiles/kate/plugins/hermes-nodes-plugin/       │
+│  ~/.hermes/profiles/kate/plugins/hermes-node-plugin/       │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  Tools (node_exec, node_read, node_write, node_list) │   │
@@ -72,22 +72,22 @@ It is easy to confuse `hermes node` and `hermes-nodes`. They are completely sepa
 
 ---
 
-## hermes-nodes (Go)
+## hermes-node (Go)
 
-Installed on each node machine. Download from the [hermes-nodes releases page](https://github.com/blaspat/hermes-nodes/releases) or build from source with `go install`.
+Installed on each node machine. Download from the [hermes-node releases page](https://github.com/blaspat/hermes-node/releases) or build from source with `go install`.
 
 ### Commands
 
 ```bash
-hermes-nodes node start --server wss://<server>:<port>  # Start node client (connects to WS server, default port 7000)
-hermes-nodes pair --server wss://<server>:<port> --token <token> --name <name>  # Pair node client to WS server
+hermes-node node start --server wss://<server>:<port>  # Start node client (connects to WS server, default port 7000)
+hermes-node pair --server wss://<server>:<port> --token <token> --name <name>  # Pair node client to WS server
 ```
 
 **Node → WS Server protocol:**
 
 Each node client maintains a persistent WS connection. When Hermes Agent sends an exec/read/write HTTP request, the WS server relays it over the node's live WS connection and waits for the response via a waiter/future pattern (request ID matching).
 
-**Log file:** The Python WS server on the VPS writes to `~/.hermes-nodes/server.log`. Each node client (Go binary) also writes to `~/.hermes-nodes/server.log` on its own machine. Both rotate daily, 10MB max.
+**Log file:** The Python WS server on the VPS writes to `~/.hermes-node/server.log`. Each node client (Go binary) also writes to `~/.hermes-node/server.log` on its own machine. Both rotate daily, 10MB max.
 
 ### Pairing
 
@@ -101,15 +101,15 @@ hermes node pair --name <node-name>
 
 **On the node machine (client side):**
 ```bash
-hermes-nodes pair --server wss://<host>:<port> --token <token> --name <node-name>
+hermes-node pair --server wss://<host>:<port> --token <token> --name <node-name>
 # → presents token to server, token is bound to this node name
 ```
 
-After pairing, the node is configured with the token in `~/.hermes-nodes/config.yaml`. Subsequent connections use `node start` instead of `pair`:
+After pairing, the node is configured with the token in `~/.hermes-node/config.yaml`. Subsequent connections use `node start` instead of `pair`:
 
 ```bash
-hermes-nodes node start --server wss://<host>:<port>
-# → reads token from ~/.hermes-nodes/config.yaml, connects
+hermes-node node start --server wss://<host>:<port>
+# → reads token from ~/.hermes-node/config.yaml, connects
 ```
 
 **Revocation:** `hermes node revoke <name>` on the VPS deletes the token. The node cannot reconnect — it must `pair` again with a new token.
@@ -122,26 +122,26 @@ hermes-nodes node start --server wss://<host>:<port>
 
 Runs on each remote machine. Connects to the WS server and registers itself by name.
 
-**Auth:** Uses the same pre-shared token as the WS server (configured in `~/.hermes-nodes/config.yaml` on the node machine).
+**Auth:** Uses the same pre-shared token as the WS server (configured in `~/.hermes-node/config.yaml` on the node machine).
 
-**Configuration:** All configuration (Auth, Name, WS Server URL, etc) configured in `~/.hermes-nodes/config.yaml` on the node machine
+**Configuration:** All configuration (Auth, Name, WS Server URL, etc) configured in `~/.hermes-node/config.yaml` on the node machine
 
 **Startup:**
 ```bash
-hermes-nodes node start --server wss://<server>:<port>  # default port 7000
+hermes-node node start --server wss://<server>:<port>  # default port 7000
 ```
 
 ---
 
-## hermes-nodes-plugin (Python)
+## hermes-node-plugin (Python)
 
-Located at: `~/.hermes/profiles/kate/plugins/hermes-nodes-plugin/`
+Located at: `~/.hermes/profiles/kate/plugins/hermes-node-plugin/`
 
 Installed by copying the plugin directory to the plugins folder (no pip install).
 
 ### Installation
 
-1. Copy `hermes-nodes-plugin/` to `~/.hermes/profiles/kate/plugins/`
+1. Copy `hermes-node-plugin/` to `~/.hermes/profiles/kate/plugins/`
 2. Ensure `hermes_nodes` config block is present in `~/.hermes/profiles/kate/config.yaml`
 3. (Re)start Hermes Agent — the plugin is auto-loaded at startup, and `hermes node ...` commands become available
 
@@ -159,13 +159,13 @@ The `hermes node` commands only appear when the plugin is loaded.
 
 ### WS Server (VPS side)
 
-Runs on the VPS alongside hermes-nodes-plugin. Started automatically via `on_session_start` plugin hook (auto-start).
+Runs on the VPS alongside hermes-node-plugin. Started automatically via `on_session_start` plugin hook (auto-start).
 
 **TCP port:** 7000 (default, configurable via `HERMES_NODES_PORT`)
 
 **Token auth:** Nodes authenticate using pairing tokens generated by `hermes node pair --name <name>`. Tokens are stored encrypted in `~/.hermes/nodes/tokens.json`. The WS server validates tokens via the `TokenStore`. The Fernet encryption key is read from the env var named by `token_encryption_key_env` (default `HERMES_NODES_TOKEN_KEY`).
 
-**WS Server config:** Reads token store path and Fernet key env var name from `~/.hermes/hermes-nodes.yaml` (or env vars). The WS server itself has no separate auth token — tool calls from the Hermes Agent to the WS server use plain HTTP on localhost with no additional auth (the server is not exposed externally).
+**WS Server config:** Reads token store path and Fernet key env var name from `~/.hermes/hermes-node.yaml` (or env vars). The WS server itself has no separate auth token — tool calls from the Hermes Agent to the WS server use plain HTTP on localhost with no additional auth (the server is not exposed externally).
 
 **HTTP Endpoints** (internal, same host, no additional auth):
 
@@ -205,10 +205,10 @@ Header: Authorization: Bearer <token>  (token presented on WS connect)
 
 ### Hermes Agent Config
 
-The plugin reads from `~/.hermes/hermes-nodes.yaml` (and env vars, which override file values):
+The plugin reads from `~/.hermes/hermes-node.yaml` (and env vars, which override file values):
 
 ```yaml
-# ~/.hermes/hermes-nodes.yaml
+# ~/.hermes/hermes-node.yaml
 host: "127.0.0.1"          # WS server bind address (default)
 # connect_host is resolved automatically at load time: the loader probes
 # ``host`` first, then ``localhost``, and stores the reachable address here.
@@ -344,13 +344,13 @@ Error:
 
 ## File Structure
 
-### hermes-nodes (Go) — Client side only
+### hermes-node (Go) — Client side only
 
 ```
-hermes-nodes/
+hermes-node/
 ├── cmd/
 │   └── node/
-│       └── main.go          # hermes-nodes node start
+│       └── main.go          # hermes-node node start
 ├── internal/
 │   ├── wsclient/            # Node WS client implementation
 │   └── protocol/            # Node ↔ WS server protocol
@@ -360,14 +360,14 @@ hermes-nodes/
 └── README.md
 ```
 
-### hermes-nodes-plugin (Python) — Server side (VPS)
+### hermes-node-plugin (Python) — Server side (VPS)
 
 ```
-hermes-nodes-plugin/
+hermes-node-plugin/
 ├── __init__.py              # register(ctx) — exposes tools
 ├── tools.py                 # node_exec, node_read, node_write, node_list
 ├── schemas.py               # Tool schemas
-├── cli.py                   # hermes-nodes server|node CLI commands
+├── cli.py                   # hermes-node server|node CLI commands
 ├── config.py                # WS server URL / token config
 ├── wsserver/                # WS server implementation
 │   ├── __init__.py
@@ -381,8 +381,8 @@ hermes-nodes-plugin/
 
 ## Launch Sequence
 
-1. **Hermes Agent startup:** `hermes-nodes-plugin` is loaded via `register(ctx)` → `on_session_start` hook auto-starts the WS server on port 7000
-2. **VPS:** WS server listens on `127.0.0.1:7000`; logs to `~/.hermes-nodes/server.log`
-3. **Node machines:** `hermes-nodes node start --server wss://<server>:<port>` → each node connects to WS server via WSS
-4. **Hermes Agent:** Already has `hermes-nodes-plugin` in its plugins folder → tools `node_exec`, `node_read`, `node_write`, `node_list` are registered at startup
+1. **Hermes Agent startup:** `hermes-node-plugin` is loaded via `register(ctx)` → `on_session_start` hook auto-starts the WS server on port 7000
+2. **VPS:** WS server listens on `127.0.0.1:7000`; logs to `~/.hermes-node/server.log`
+3. **Node machines:** `hermes-node node start --server wss://<server>:<port>` → each node connects to WS server via WSS
+4. **Hermes Agent:** Already has `hermes-node-plugin` in its plugins folder → tools `node_exec`, `node_read`, `node_write`, `node_list` are registered at startup
 5. **Usage:** Hermes Agent calls tools → HTTP to WS server → relayed over WS to node → response back

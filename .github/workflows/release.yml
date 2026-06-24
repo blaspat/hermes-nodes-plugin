@@ -49,9 +49,9 @@ jobs:
       - name: Build source archive
         run: |
           TAG="${{ github.ref_name }}"
-          ARCHIVE="hermes-nodes-plugin-${TAG#v}.tar.gz"
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="hermes-nodes-plugin-${TAG#v}/" \
+          ARCHIVE="hermes-node-plugin-${TAG#v}.tar.gz"
+          # Use git archive to create the tarball
+          git archive --format=tar.gz --prefix="hermes-node-plugin-${TAG#v}/" \
             -o "dist/${ARCHIVE}" HEAD
           echo "artifact=${ARCHIVE}" >> "$GITHUB_ENV"
 

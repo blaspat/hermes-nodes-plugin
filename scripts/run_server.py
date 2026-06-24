@@ -22,7 +22,7 @@ from pathlib import Path
 # ── paths ────────────────────────────────────────────────────────────────────
 
 HERMES_HOME = Path.home() / ".hermes"
-PLUGIN_DIR = HERMES_HOME / "plugins" / "hermes-nodes-plugin"
+PLUGIN_DIR = HERMES_HOME / "plugins" / "hermes-node-plugin"
 
 # Register the hermes_nodes_plugin namespace in sys.modules so that
 # "from hermes_nodes_plugin.lifecycle import ..." works with flat layout.
@@ -42,7 +42,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("hermes-nodes-server")
+logger = logging.getLogger("hermes-node-server")
 
 
 # ── signal handling ───────────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ def _run_server() -> None:
 
         runner = get_default_runner()
         logger.info(
-            "Starting hermes-nodes server on %s:%s …",
+            "Starting hermes-node server on %s:%s …",
             runner.host,
             runner.port,
         )
@@ -85,7 +85,7 @@ def _run_server() -> None:
         # runner.start() is idempotent — safe to call on an already-running runner
         loop.run_until_complete(runner.start())
         logger.info(
-            "hermes-nodes server is running on %s:%s [pid=%d]",
+            "hermes-node server is running on %s:%s [pid=%d]",
             runner.host,
             runner.port,
             _get_pid(),
@@ -95,12 +95,12 @@ def _run_server() -> None:
         loop.run_forever()
 
     except Exception as exc:
-        logger.exception("hermes-nodes server failed to start: %s", exc)
+        logger.exception("hermes-node server failed to start: %s", exc)
 
     finally:
         # Give loop a chance to finish pending tasks, then close
         loop.close()
-        logger.info("hermes-nodes server event loop closed")
+        logger.info("hermes-node server event loop closed")
 
 
 def _get_pid() -> int:
@@ -114,11 +114,11 @@ def _get_pid() -> int:
 
 
 def main() -> None:
-    logger.info("hermes-nodes-server starting …")
+    logger.info("hermes-node-server starting …")
 
     server_thread = threading.Thread(
         target=_run_server,
-        name="hermes-nodes-server",
+        name="hermes-node-server",
         daemon=True,  # systemd gets the main process exit; daemon thread dies with it
     )
     server_thread.start()
@@ -129,7 +129,7 @@ def main() -> None:
     while not _shutdown.is_set():
         time.sleep(1)
 
-    logger.info("hermes-nodes-server stopped")
+    logger.info("hermes-node-server stopped")
 
 
 if __name__ == "__main__":

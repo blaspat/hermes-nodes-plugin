@@ -1,4 +1,4 @@
-"""Encrypted token store for the hermes-nodes plugin.
+"""Encrypted token store for the hermes-node plugin.
 
 Persists node→token bindings to a JSON file encrypted at rest with
 :class:`cryptography.fernet.Fernet` (AES-128-CBC + HMAC-SHA256). The

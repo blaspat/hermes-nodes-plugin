@@ -1,4 +1,4 @@
-"""Append-only JSONL audit log for hermes-nodes-plugin calls (Task 2.9).
+"""Append-only JSONL audit log for hermes-node-plugin calls (Task 2.9).
 
 Every ``node_exec`` / ``node_read`` / ``node_write`` call (successful,
 errored, timed out, or refused because the node is offline) is recorded
@@ -369,7 +369,7 @@ class AuditWriter:
                     # the write rather than losing the row
                     # silently or breaking the call site.
                     logger.warning(
-                        "hermes-nodes audit: record() called on a closed writer "
+                        "hermes-node audit: record() called on a closed writer "
                         "(node=%r, action=%r, status=%r) — row dropped",
                         node,
                         action,
@@ -406,7 +406,7 @@ class AuditWriter:
             # rotation errors that would otherwise violate the
             # ``record()`` never-raises contract (Issue #11).
             logger.warning(
-                "hermes-nodes audit: failed to write entry "
+                "hermes-node audit: failed to write entry "
                 "(node=%r, action=%r, status=%r): %s",
                 node,
                 action,
@@ -471,7 +471,7 @@ class AuditWriter:
             entries = sorted(parent.iterdir())
         except OSError as exc:
             logger.warning(
-                "hermes-nodes audit: cannot list %s to purge rotations: %s",
+                "hermes-node audit: cannot list %s to purge rotations: %s",
                 parent,
                 exc,
             )
@@ -493,7 +493,7 @@ class AuditWriter:
             except OSError as exc:
                 # Don't fail the whole sweep on one unreadable file.
                 logger.warning(
-                    "hermes-nodes audit: cannot delete expired rotation %s: %s",
+                    "hermes-node audit: cannot delete expired rotation %s: %s",
                     entry,
                     exc,
                 )
@@ -665,7 +665,7 @@ def _resolve_audit_config(env: Mapping[str, str] | None = None) -> AuditConfig:
         retention = int(retention_raw)
     except (TypeError, ValueError):
         logger.warning(
-            "hermes-nodes audit: invalid %s=%r; using default %d",
+            "hermes-node audit: invalid %s=%r; using default %d",
             RETENTION_ENV_VAR,
             retention_raw,
             DEFAULT_RETENTION_DAYS,

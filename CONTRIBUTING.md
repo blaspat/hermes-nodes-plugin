@@ -13,15 +13,15 @@ for getting changes reviewed and merged.
   file, ship the cleanup as a separate PR.
 - **Tests required for behavior changes.** A bug fix without a regression
   test is incomplete. The test suite is `pytest tests/ -v`; the project also
-  has E2E tests gated on `-m e2e` that need the `hermes-nodes` Go binary.
+  has E2E tests gated on `-m e2e` that need the `hermes-node` Go binary.
 - **Don't reformat unrelated code.** Keep diffs focused. A drive-by `black`
   pass makes the reviewer read more than they need to.
 
 ## Local setup
 
 ```bash
-git clone https://github.com/blaspat/hermes-nodes-plugin.git
-cd hermes-nodes-plugin
+git clone https://github.com/blaspat/hermes-node-plugin.git
+cd hermes-node-plugin
 
 # Run the test suite
 pytest tests/ -v
@@ -89,7 +89,7 @@ Don't file public issues for security bugs. See
 
 - Unit tests live in `tests/` and mirror the source layout.
 - E2E tests in `tests/e2e/` are gated behind `@pytest.mark.e2e` and need
-  the Go binary from [`hermes-nodes`](https://github.com/blaspat/hermes-nodes)
+  the Go binary from [`hermes-node`](https://github.com/blaspat/hermes-node)
   built and on `PATH`. Run them with `pytest tests/e2e/ -v -m e2e`.
 - New features need at least one happy-path test and one failure-path test
   in the same PR.

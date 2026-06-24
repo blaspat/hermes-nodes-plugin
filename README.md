@@ -1,4 +1,4 @@
-# hermes-nodes-plugin
+# Hermes Node Plugin
 A Hermes Agent plugin that turns any Hermes profile into a “brain” to command remote nodes over an authenticated WebSocket.
 
 ## Table of Contents
@@ -17,14 +17,14 @@ Install Python 3.11+ and have a Hermes Agent set up.
 Install the plugin:
 
  ```bash
- git clone https://github.com/blaspat/hermes-nodes-plugin \
-  ~/.hermes/plugins/hermes-nodes-plugin
+ git clone https://github.com/blaspat/hermes-node-plugin \
+  ~/.hermes/plugins/hermes-node-plugin
  ```
-Then, update your `config.yaml`. Add `hermes-nodes-plugin`
+Then, update your `config.yaml`. Add `hermes-node-plugin`
 ```yaml
 plugins:
   enabled:
-  - hermes-nodes-plugin
+  - hermes-node-plugin
 ```
 
 ## Core Features
@@ -36,7 +36,7 @@ plugins:
 ## Usage
 
 ### 1. Configure
-Edit `~/.hermes/hermes-nodes.yaml` with host/port/TLS settings.
+Edit `~/.hermes/hermes-node.yaml` with host/port/TLS settings.
 
 Optional retry settings (defaults shown):
 
@@ -127,7 +127,7 @@ hermes node revoke --name my-devbox
   A: All interactions are logged to `~/.hermes/logs/nodes-audit.log` and retained per `audit_retention_days`.
 
 ## Related
-- **[hermes‑nodes](`github.com/blaspat/hermes-nodes`):** Remote node binary.
+- **[Hermes Node (client)](`github.com/blaspat/hermes-node`):** Remote node binary.
 - **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
 
 ---

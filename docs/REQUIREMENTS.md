@@ -1,6 +1,6 @@
-# hermes-nodes-plugin: Requirements
+# hermes-node-plugin: Requirements
 
-This document is the source of truth for what the `hermes-nodes-plugin` package must do. The implementation plan in `/home/User/.hermes/plans/2026-06-04_001727-hermes-nodes.md` derives from this.
+This document is the source of truth for what the `hermes-node-plugin` package must do. The implementation plan derives from this.
 
 > **Audience:** Agent (implements), Quinn (validates against), User (approves).
 
@@ -58,7 +58,7 @@ This document is the source of truth for what the `hermes-nodes-plugin` package 
 
 ### FR-4: Configuration
 
-**FR-4.1** Plugin reads configuration from `~/.hermes/hermes-nodes.yaml` and env vars. Env vars override file values. Defaults if neither set:
+**FR-4.1** Plugin reads configuration from `~/.hermes/hermes-node.yaml` and env vars. Env vars override file values. Defaults if neither set:
 - `host`: `127.0.0.1` (the safe default — assumes nginx is fronting TLS)
 - `port`: `7000`
 - `tls_cert_path`: unset (TLS termination is expected at the reverse proxy)
@@ -173,7 +173,7 @@ All of the following must be true:
 5. ✅ The plugin's unit test suite passes in CI with >= 80% coverage.
 6. ✅ The e2e test in `tests/e2e/test_full_flow.py` passes on Linux amd64 (CI), and the install scripts work on a clean Mac and a clean Windows machine (manual verification by User).
 7. ✅ `SECURITY-REVIEW.md` exists and is suitable for showing to a corporate security team.
-8. ✅ A `pip install git+https://github.com/blaspat/hermes-nodes-plugin.git` in any Hermes profile's venv results in the plugin auto-loading and the `hermes node ...` commands appearing in the CLI.
+8. ✅ A `pip install git+https://github.com/blaspat/hermes-node-plugin.git` in any Hermes profile's venv results in the plugin auto-loading and the `hermes node ...` commands appearing in the CLI.
 
 ---
 

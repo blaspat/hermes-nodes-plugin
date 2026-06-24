@@ -19,7 +19,7 @@
 - **Token format:** 32 random bytes, base64url-encoded, generated with `secrets.token_urlsafe(32)`. ~256 bits of entropy.
 - **Token comparison:** constant-time on the server (`hmac.compare_digest`).
 - **Token storage (server):** Fernet-encrypted (AES-128-CBC + HMAC-SHA256) at `~/.hermes/nodes/tokens.json`. The Fernet key is loaded from `HERMES_NODES_TOKEN_KEY`.
-- **Token storage (node):** plaintext in `~/.hermes-nodes/config.toml`, file mode `0600`. **v1 limitation** — see "Future hardening" below.
+- **Token storage (node):** plaintext in `~/.hermes-node/config.toml`, file mode `0600`. **v1 limitation** — see "Future hardening" below.
 - **Token lifetime:** unlimited. Revoked only by `hermes node revoke`. v1 has no auto-rotation.
 
 ## Transport
@@ -44,7 +44,7 @@
 
 **Both sides log every call.** Format is identical: one JSON object per line.
 
-**Node-side log:** `~/.hermes-nodes/audit.log` (configurable). Default retention: 90 days (configurable).
+**Node-side log:** `~/.hermes-node/audit.log` (configurable). Default retention: 90 days (configurable).
 **Server-side log:** `~/.hermes/logs/nodes-audit.log`. Default retention: 1 year (configurable).
 
 **Fields:**
@@ -88,7 +88,7 @@ This list is important for a security review. The node binary:
 - ❌ Does not capture keystrokes or clipboard.
 - ❌ Does not modify system settings, install software, or change firewall rules.
 - ❌ Does not open any inbound network ports.
-- ❌ Does not write to disk outside `~/.hermes-nodes/` (the config dir).
+- ❌ Does not write to disk outside `~/.hermes-node/` (the config dir).
 - ❌ Does not read files outside the configured `allowed_paths`.
 - ❌ Does not load dynamic code or evaluate external input.
 - ❌ Does not phone home (no telemetry, no update checks, no analytics).
