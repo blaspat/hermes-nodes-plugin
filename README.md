@@ -127,8 +127,8 @@ hermes node revoke --name my-devbox
   A: All interactions are logged to `~/.hermes/logs/nodes-audit.log` and retained per `audit_retention_days`.
 
 ## Related
-- **[Hermes Node (client)](`github.com/blaspat/hermes-node`):** Remote node binary.
-- **[Hermes Agent](`github.com/NousResearch/hermes-agent`):** Core framework.
+- **[Hermes Node (client)](https://github.com/blaspat/hermes-node):** Remote node binary.
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent):** Core framework.
 
 ---
 License: [MIT](LICENSE) | Author: © 2026 Blasius Patrick
