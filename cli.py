@@ -101,7 +101,7 @@ def setup_node_cli(subparser: argparse.ArgumentParser) -> None:
     that's been built since the plugin first installed.
     """
     subparser.description = (
-        "Manage paired hermes-nodes (WSS node server). "
+        "Manage paired hermes-node (WSS node server). "
         "Subcommands: pair, list, revoke, status."
     )
     subs = subparser.add_subparsers(dest="node_action")
@@ -422,10 +422,10 @@ def _cmd_status(args: argparse.Namespace | None = None) -> int:
     try:
         s.connect((config.connect_host, config.port))
         s.close()
-        print(f"hermes-nodes server: listening on {config.connect_host}:{config.port}")
+        print(f"hermes-node server: listening on {config.connect_host}:{config.port}")
         return 0
     except (OSError, socket.timeout):
-        print("hermes-nodes server: not running")
+        print("hermes-node server: not running")
         return 1
 
 
@@ -494,7 +494,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         prog="hermes-node",
-        description="Manage paired hermes-nodes (WSS node server).",
+        description="Manage paired hermes-node (WSS node server).",
     )
     setup_node_cli(parser)
     args = parser.parse_args()

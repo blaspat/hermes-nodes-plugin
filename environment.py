@@ -1,7 +1,7 @@
 """Hermes ``BaseEnvironment`` implementation for paired remote nodes.
 
 This is the interface Agent uses to run shell commands on a paired
-``hermes-nodes`` Go binary over the WSS connection. It satisfies the
+``hermes-node`` Go binary over the WSS connection. It satisfies the
 same contract as ``hermes_agent.tools.environments.base.BaseEnvironment``
 — ``execute()`` returns ``{"output": str, "returncode": int}`` — so
 the agent's tool layer can swap a local shell for a node shell without
@@ -222,7 +222,7 @@ class NodeEnvironment:
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
-                "hermes-nodes: audit record raised unexpectedly "
+                "hermes-node: audit record raised unexpectedly "
                 "(action=%r, node=%r, status=%r): %s",
                 action,
                 self._target,

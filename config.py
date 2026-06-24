@@ -1,9 +1,9 @@
-"""Configuration loader for the hermes-nodes plugin.
+"""Configuration loader for the hermes-node plugin.
 
 Precedence (highest to lowest):
 
   1. Environment variables (``HERMES_NODES_*``).
-  2. YAML config file at ``~/.hermes/hermes-nodes.yaml`` (path overridable
+  2. YAML config file at ``~/.hermes/hermes-node.yaml`` (path overridable
      via ``load_config(config_path=...)``).
   3. Built-in defaults baked into :class:`NodeServerConfig`.
 
@@ -90,7 +90,7 @@ from .errors import ConfigError
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_CONFIG_PATH = Path("~/.hermes/hermes-nodes.yaml").expanduser()
+DEFAULT_CONFIG_PATH = Path("~/.hermes/hermes-node.yaml").expanduser()
 DEFAULT_TOKEN_STORE_PATH = Path("~/.hermes/nodes/tokens.json")
 DEFAULT_TOKEN_STORE_STR = "~/.hermes/nodes/tokens.json"
 
@@ -628,7 +628,7 @@ def load_config(
             Tests use this to inject fixtures without touching the real
             process environment.
         config_path: Override the YAML file location (defaults to
-            ``~/.hermes/hermes-nodes.yaml``). A missing file is *not* an
+            ``~/.hermes/hermes-node.yaml``). A missing file is *not* an
             error — the loader falls through to dataclass defaults.
 
     Returns:

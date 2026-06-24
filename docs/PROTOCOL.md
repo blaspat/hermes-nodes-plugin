@@ -3,7 +3,7 @@
 The wire protocol spoken between a Hermes Agent brain (Python, on the
 server/VPS) and a Hermes Node (Go, on the laptop/remote machine) is
 **defined canonically in
-[`hermes-nodes/PROTOCOL.md`](https://github.com/blaspat/hermes-nodes/blob/main/PROTOCOL.md)**.
+[`hermes-node/PROTOCOL.md`](https://github.com/blaspat/hermes-node/blob/main/PROTOCOL.md)**.
 Both implementations must conform to that contract.
 
 This document exists for two reasons:
@@ -24,7 +24,7 @@ doc wins. File a PR against this file to bring it back in sync.
 ## 1. Canonical protocol
 
 See
-[`hermes-nodes/PROTOCOL.md`](https://github.com/blaspat/hermes-nodes/blob/main/PROTOCOL.md).
+[`hermes-node/PROTOCOL.md`](https://github.com/blaspat/hermes-node/blob/main/PROTOCOL.md).
 That doc covers:
 
 - Connection lifecycle (hello / hello_ack / auth / exec / bye)

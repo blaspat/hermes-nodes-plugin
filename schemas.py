@@ -10,7 +10,7 @@ NODE_EXEC: dict[str, str | dict] = {
     "name": "node_exec",
     "description": (
         "Run a shell command on a paired remote node (e.g. a laptop with "
-        "the hermes-nodes Go binary installed) and return its stdout/stderr "
+        "the hermes-node Go binary installed) and return its stdout/stderr "
         "and exit code. The command runs in the node's persistent shell, "
         "so `cd` and `export` between calls persist. Use `hermes node list` "
         "(or `node_list()`) to see which nodes are currently connected."
