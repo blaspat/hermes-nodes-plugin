@@ -233,6 +233,31 @@ async def _safe_close(websocket: WebSocket, code: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Request body models for internal HTTP endpoints.
+# Defined at module level to avoid the `from __future__ import annotations`
+# + inline-BaseModel interaction that causes FastAPI/Pydantic to treat body
+# params as query params → silent 422 (see skill §2.7.0).
+# ---------------------------------------------------------------------------
+
+
+class _ExecRequest(BaseModel):
+    command: str
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    timeout_ms: int | None = None
+
+
+class _ReadRequest(BaseModel):
+    path: str
+
+
+class _WriteRequest(BaseModel):
+    path: str
+    content: str
+    mode: str = "overwrite"
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app factory
 # ---------------------------------------------------------------------------
 
@@ -509,12 +534,6 @@ def create_app(
         }
 
     # -- Internal exec endpoint --------------------------------------------
-    class _ExecRequest(BaseModel):
-        command: str
-        cwd: str | None = None
-        env: dict[str, str] | None = None
-        timeout_ms: int | None = None
-
     @app.post("/nodes/{node_name}/exec")
     async def nodes_exec(node_name: str, body: _ExecRequest) -> dict[str, Any]:
         conn = await registry.get(node_name)
@@ -570,9 +589,6 @@ def create_app(
             return {"status": "error", "code": 500, "reason": str(e)}
 
     # -- Internal read endpoint -------------------------------------------
-    class _ReadRequest(BaseModel):
-        path: str
-
     @app.post("/nodes/{node_name}/read")
     async def nodes_read(node_name: str, body: _ReadRequest) -> dict[str, Any]:
         conn = await registry.get(node_name)
@@ -620,11 +636,6 @@ def create_app(
             return {"status": "error", "code": 500, "reason": str(e)}
 
     # -- Internal write endpoint -------------------------------------------
-    class _WriteRequest(BaseModel):
-        path: str
-        content: str
-        mode: str = "overwrite"
-
     @app.post("/nodes/{node_name}/write")
     async def nodes_write(node_name: str, body: _WriteRequest) -> dict[str, Any]:
         conn = await registry.get(node_name)
@@ -647,12 +658,15 @@ def create_app(
             }
 
         try:
+            import base64 as _base64
+
+            content_b64 = _base64.b64encode(body.content.encode("utf-8")).decode("ascii")
             await conn.websocket.send_json(
                 {
                     "type": "write",
                     "id": request_id,
                     "path": body.path,
-                    "content": body.content,
+                    "content_b64": content_b64,
                     "mode": body.mode,
                 }
             )

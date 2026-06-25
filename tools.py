@@ -229,8 +229,17 @@ def _node_read_impl(
 
         if result.get("status") == "ok":
             read_result = result.get("read_result", {})
+            import base64 as _base64
+
+            content_b64 = read_result.get("content_b64", "")
+            content = ""
+            if content_b64:
+                try:
+                    content = _base64.b64decode(content_b64).decode("utf-8")
+                except Exception:
+                    content = ""
             return json.dumps({
-                "content": read_result.get("content", ""),
+                "content": content,
                 "size_bytes": read_result.get("size_bytes", 0),
                 "truncated": read_result.get("truncated", False),
                 "encoding": "utf-8",
