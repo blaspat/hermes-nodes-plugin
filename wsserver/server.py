@@ -658,12 +658,15 @@ def create_app(
             }
 
         try:
+            import base64 as _base64
+
+            content_b64 = _base64.b64encode(body.content.encode("utf-8")).decode("ascii")
             await conn.websocket.send_json(
                 {
                     "type": "write",
                     "id": request_id,
                     "path": body.path,
-                    "content": body.content,
+                    "content_b64": content_b64,
                     "mode": body.mode,
                 }
             )
